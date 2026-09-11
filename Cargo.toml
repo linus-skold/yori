@@ -16,7 +16,11 @@ repository = "https://github.com/trixnz/yori"
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-all = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Explicit owner preference: useful docs, not mandatory Errors/Panics boilerplate.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 [profile.dev]
 split-debuginfo = "unpacked"

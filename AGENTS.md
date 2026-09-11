@@ -6,6 +6,20 @@ Never capture screenshots of the user's system, desktop, windows, or application
 including through tools, scripts, or subagents. When visual evidence is needed,
 ask the user to take and provide a screenshot instead.
 
+## Local validation
+
+After the final edit, run `./scripts/check`. A task is complete only when the
+format, Clippy, test, and build checks all pass with zero warnings. Fix failures
+and rerun the gate; if blocked, report the failing command and leave the work
+explicitly unfinished. Report native GUI behavior separately: automated checks
+do not establish that interactions work.
+
+Keep the lint baseline intact. Do not weaken lint settings, remove checks, or add
+blanket suppressions to get a passing result. When a lint genuinely does not fit,
+use the narrowest `#[expect(..., reason = "...")]` with a concrete justification
+and mention the exception in the handoff. Changes to workspace-wide lint policy
+require owner approval.
+
 ## Commits and pull requests
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for every commit message and pull-request title:
