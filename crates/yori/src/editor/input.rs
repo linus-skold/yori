@@ -3,9 +3,10 @@ use super::{
     ActiveTheme, AlignedEditor, Alignment, App, Backspace, Bounds, Context, CopySelected,
     CutSelected, Delete, DisplayLine, EditOutcome, EntityInputHandler, Font, GUTTER_WIDTH,
     HEADER_HEIGHT, InsertTab, KEY_CONTEXT, KeyBinding, LINE_HEIGHT, Motion, MoveDown, MoveEnd,
-    MoveFinish, MoveHome, MoveLeft, MoveRight, MoveStart, MoveUp, Newline, Paste, Pixels, Range,
-    Redo, SelectAll, SelectDown, SelectEnd, SelectHome, SelectLeft, SelectRight, SelectUp,
-    Selection, Side, TAB_WIDTH, TextRun, UTF16Selection, Undo, Window, point, px, source_offset_at,
+    MoveFinish, MoveHome, MoveLeft, MoveRight, MoveStart, MoveUp, Newline, NextChange, Paste,
+    Pixels, PreviousChange, Range, Redo, SelectAll, SelectDown, SelectEnd, SelectHome, SelectLeft,
+    SelectRight, SelectUp, Selection, Side, TAB_WIDTH, TextRun, UTF16Selection, Undo, Window,
+    point, px, source_offset_at,
 };
 use yori::geometry::{display_units, whole_rows};
 use yori_document::editing::{self, TextSelection};
@@ -82,6 +83,7 @@ impl AlignedEditor {
             anchor.side == Side::Left,
         );
         self.vertical_scroll = display_units(row) * LINE_HEIGHT + anchor.fraction;
+        self.locate_caret_change();
         self.reveal_cursor(window, cx);
         cx.notify();
     }
@@ -229,6 +231,7 @@ impl AlignedEditor {
             anchor: next.anchor,
             head: next.head,
         });
+        self.locate_caret_change();
         self.reveal_cursor(window, cx);
         cx.notify();
     }
@@ -243,6 +246,7 @@ impl AlignedEditor {
             anchor: 0,
             head: self.document(side).document.text().len(),
         });
+        self.locate_caret_change();
         self.preferred_column = None;
         cx.notify();
     }
@@ -487,6 +491,8 @@ pub(super) fn bind_keys(cx: &mut App) {
         "ctrl"
     };
     cx.bind_keys([
+        KeyBinding::new("alt-up", PreviousChange, Some(KEY_CONTEXT)),
+        KeyBinding::new("alt-down", NextChange, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-c"), CopySelected, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-v"), Paste, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-x"), CutSelected, Some(KEY_CONTEXT)),

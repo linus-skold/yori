@@ -1,5 +1,9 @@
 //! Headless line comparison, alignment, and undoable baseline restoration.
 
+mod intraline;
+
+pub use intraline::IntralineDiff;
+
 use similar::{Algorithm, DiffTag, TextDiff};
 use std::ops::Range;
 use yori_document::{
@@ -130,6 +134,33 @@ impl Alignment {
     #[must_use]
     pub fn rows(&self) -> &[AlignmentRow] {
         &self.rows
+    }
+
+    /// Compute word/token emphasis for one paired row, without modifying source
+    /// or alignment. Callers can request only viewport-near rows rather than
+    /// computing fine-grained differences throughout a large document.
+    #[must_use]
+    pub fn intraline(&self, left: &Document, right: &Document, row: usize) -> IntralineDiff {
+        let Some(AlignmentRow {
+            left: Some(old),
+            right: Some(new),
+            kind: DiffKind::Modified,
+        }) = self.rows.get(row)
+        else {
+            return IntralineDiff::default();
+        };
+        let mut changes = IntralineDiff::between(left.content(*old), right.content(*new));
+        let old_start = left.lines()[*old].content.start;
+        let new_start = right.lines()[*new].content.start;
+        for range in &mut changes.left {
+            range.start += old_start;
+            range.end += old_start;
+        }
+        for range in &mut changes.right {
+            range.start += new_start;
+            range.end += new_start;
+        }
+        changes
     }
 
     /// Locate a source cursor without ever putting it inside alignment-only content.

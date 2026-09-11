@@ -2,12 +2,14 @@
 
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc};
 
+mod change_navigation;
+mod highlighting;
 mod input;
 
 use yori_document::editing::{EditHistory, EditOutcome, Motion};
 
 use gpui_kit::component::{
-    ActiveTheme, ElementExt, Sizable,
+    ActiveTheme, Disableable, ElementExt, Sizable,
     button::{Button, ButtonVariants},
     highlighter::SyntaxHighlighter,
 };
@@ -15,18 +17,21 @@ use gpui_kit::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, Font, HighlightStyle, InteractiveElement, IntoElement, KeyBinding, MouseButton,
     MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled, StyledText, TextRun, UTF16Selection, UnderlineStyle, Window, canvas, div,
-    hsla, point, px,
+    SharedString, Styled, StyledText, TextRun, UTF16Selection, Window, canvas, div, hsla, point,
+    px,
 };
 use ropey::Rope;
 use yori::{
     display::{DisplayLine, max_display_columns, source_offset_at},
     geometry::{EditorGeometry, display_units, horizontal_scroll_limit, whole_rows},
+    navigation::{ChangeDirection, ChangeNavigation},
 };
-use yori_diff::{Alignment, DiffKind};
+use yori_diff::{Alignment, DiffKind, IntralineDiff};
 use yori_document::Document;
 
-const HEADER_HEIGHT: f32 = 42.0;
+const TOOLBAR_HEIGHT: f32 = 38.0;
+const FILE_HEADER_HEIGHT: f32 = 42.0;
+const HEADER_HEIGHT: f32 = TOOLBAR_HEIGHT + FILE_HEADER_HEIGHT;
 const LINE_HEIGHT: f32 = 20.0;
 const RESTORE_WIDTH: f32 = 24.0;
 const GUTTER_WIDTH: f32 = 58.0 + RESTORE_WIDTH;
@@ -61,6 +66,8 @@ gpui_kit::actions!(
         SelectEnd,
         MoveStart,
         MoveFinish,
+        PreviousChange,
+        NextChange,
     ]
 );
 
@@ -138,6 +145,7 @@ pub(super) struct AlignedEditor {
     left: PaneDocument,
     right: PaneDocument,
     alignment: Alignment,
+    navigation: ChangeNavigation,
     history: EditHistory,
     preferred_column: Option<usize>,
     focus: FocusHandle,
@@ -152,17 +160,20 @@ impl AlignedEditor {
     pub(super) fn new(
         left: PaneDocument,
         right: PaneDocument,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let alignment = Alignment::between(&left.document, &right.document);
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
         Self {
             left,
             right,
             alignment,
+            navigation: ChangeNavigation::default(),
             history: EditHistory::default(),
             preferred_column: None,
-            focus: cx.focus_handle(),
+            focus,
             selection: None,
             vertical_scroll: 0.0,
             horizontal_scroll: 0.0,
@@ -343,6 +354,7 @@ impl AlignedEditor {
             anchor,
             head: offset,
         });
+        self.locate_pointer_change(event.position);
         cx.notify();
     }
 
@@ -355,6 +367,7 @@ impl AlignedEditor {
             && selection.side == side
         {
             selection.head = offset;
+            self.locate_pointer_change(event.position);
             cx.notify();
         }
     }
@@ -421,6 +434,7 @@ impl AlignedEditor {
         pane: &PaneDocument,
         line_index: usize,
         display: &DisplayLine,
+        intraline: &IntralineDiff,
         cx: &Context<Self>,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
         let source_range = pane.document.lines()[line_index].content.clone();
@@ -438,50 +452,29 @@ impl AlignedEditor {
             .flatten()
             .map(|range| display.display_range(range))
             .filter(|range| !range.is_empty());
-        let mut boundaries = vec![0, display.text.len()];
-        for (range, _) in &syntax {
-            boundaries.extend([range.start, range.end]);
+        let changed: Vec<_> = match side {
+            Side::Left => &intraline.left,
+            Side::Right => &intraline.right,
         }
-        if let Some(range) = &selected {
-            boundaries.extend([range.start, range.end]);
-        }
-        if let Some(range) = &marked {
-            boundaries.extend([range.start, range.end]);
-        }
-        boundaries.sort_unstable();
-        boundaries.dedup();
-        boundaries
-            .windows(2)
-            .filter_map(|pair| {
-                let range = pair[0]..pair[1];
-                if range.is_empty() {
-                    return None;
-                }
-                let mut style = syntax
-                    .iter()
-                    .find(|(syntax_range, _)| {
-                        syntax_range.start <= range.start && syntax_range.end >= range.end
-                    })
-                    .map(|(_, style)| *style)
-                    .unwrap_or_default();
-                if selected.as_ref().is_some_and(|selected| {
-                    selected.start < range.end && selected.end > range.start
-                }) {
-                    style.background_color = Some(cx.theme().selection);
-                }
-                if marked
-                    .as_ref()
-                    .is_some_and(|marked| marked.start < range.end && marked.end > range.start)
-                {
-                    style.underline = Some(UnderlineStyle {
-                        color: Some(cx.theme().foreground),
-                        thickness: px(1.0),
-                        wavy: false,
-                    });
-                }
-                Some((range, style))
-            })
-            .collect()
+        .iter()
+        .map(|range| display.display_range(range.clone()))
+        .filter(|range| !range.is_empty())
+        .collect();
+        highlighting::compose(
+            display.text.len(),
+            &syntax,
+            &changed,
+            selected.as_ref(),
+            marked.as_ref(),
+            &highlighting::OverlayColors {
+                changed: match side {
+                    Side::Left => hsla(0.02, 0.62, 0.34, 0.8),
+                    Side::Right => hsla(0.34, 0.48, 0.30, 0.8),
+                },
+                selected: cx.theme().selection,
+                foreground: cx.theme().foreground,
+            },
+        )
     }
 
     fn row_background(kind: DiffKind, side: Side) -> gpui_kit::Hsla {
@@ -500,10 +493,12 @@ impl AlignedEditor {
         side: Side,
         row_index: usize,
         top: f32,
-        pane_width: f32,
-        text_viewport_width: f32,
+        geometry: EditorGeometry,
+        intraline: &IntralineDiff,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let pane_width = geometry.pane_width();
+        let text_viewport_width = geometry.text_viewport_width();
         let row = &self.alignment.rows()[row_index];
         let pane = self.document(side);
         let line = match side {
@@ -527,7 +522,7 @@ impl AlignedEditor {
                 source_line.content.start,
                 TAB_WIDTH,
             );
-            let highlights = self.text_highlights(side, pane, line_index, &display, cx);
+            let highlights = self.text_highlights(side, pane, line_index, &display, intraline, cx);
             let text =
                 StyledText::new(SharedString::from(display.text)).with_highlights(highlights);
             container = container
@@ -559,7 +554,80 @@ impl AlignedEditor {
                         ),
                 );
         }
+        if self
+            .navigation
+            .current(&self.alignment)
+            .is_some_and(|index| self.alignment.blocks()[index].rows.contains(&row_index))
+        {
+            container = container.child(
+                div()
+                    .absolute()
+                    .left(px(GUTTER_WIDTH - 3.0))
+                    .top(px(0.0))
+                    .w(px(3.0))
+                    .h(px(LINE_HEIGHT))
+                    .bg(cx.theme().primary),
+            );
+        }
         container
+    }
+
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.alignment.blocks().len();
+        let label = if let Some(index) = self.navigation.current(&self.alignment) {
+            format!("Change {} of {count}", index + 1)
+        } else if count == 0 {
+            "No changes".to_owned()
+        } else if count == 1 {
+            "1 change".to_owned()
+        } else {
+            format!("{count} changes")
+        };
+        div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .w_full()
+            .h(px(TOOLBAR_HEIGHT))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .overflow_hidden()
+            .bg(cx.theme().secondary)
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("previous-change")
+                    .label("↑ Previous")
+                    .ghost()
+                    .with_size(px(26.0))
+                    .tooltip("Previous change (Alt+Up)")
+                    .disabled(
+                        self.navigation
+                            .target(&self.alignment, ChangeDirection::Previous)
+                            .is_none(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.previous_change(&PreviousChange, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("next-change")
+                    .label("↓ Next")
+                    .ghost()
+                    .with_size(px(26.0))
+                    .tooltip("Next change (Alt+Down)")
+                    .disabled(
+                        self.navigation
+                            .target(&self.alignment, ChangeDirection::Next)
+                            .is_none(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.next_change(&NextChange, window, cx);
+                    })),
+            )
+            .child(div().text_color(cx.theme().muted_foreground).child(label))
     }
 }
 
@@ -603,23 +671,13 @@ impl Render for AlignedEditor {
             .on_mouse_move(cx.listener(Self::mouse_move));
         for row_index in first_row..end_row {
             let top = geometry.visible_row_top(row_index, first_row, row_offset);
+            // Fine-grained work is viewport-only and shared by both cells.
+            let intraline =
+                self.alignment
+                    .intraline(&self.left.document, &self.right.document, row_index);
             rows = rows
-                .child(self.render_pane_row(
-                    Side::Left,
-                    row_index,
-                    top,
-                    pane_width,
-                    text_viewport_width,
-                    cx,
-                ))
-                .child(self.render_pane_row(
-                    Side::Right,
-                    row_index,
-                    top,
-                    pane_width,
-                    text_viewport_width,
-                    cx,
-                ));
+                .child(self.render_pane_row(Side::Left, row_index, top, geometry, &intraline, cx))
+                .child(self.render_pane_row(Side::Right, row_index, top, geometry, &intraline, cx));
         }
 
         if self.focus.is_focused(window)
@@ -698,6 +756,8 @@ impl Render for AlignedEditor {
             .line_height(px(LINE_HEIGHT))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(Self::previous_change))
+            .on_action(cx.listener(Self::next_change))
             .on_action(cx.listener(Self::copy_selected))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
@@ -773,6 +833,7 @@ impl Render for AlignedEditor {
                 .size_full(),
             )
             .child(rows)
+            .child(self.render_toolbar(cx))
             .child(
                 div()
                     .absolute()
@@ -785,10 +846,10 @@ impl Render for AlignedEditor {
             .child(
                 div()
                     .absolute()
-                    .top(px(0.0))
+                    .top(px(TOOLBAR_HEIGHT))
                     .left(px(0.0))
                     .w(px(pane_width))
-                    .h(px(HEADER_HEIGHT))
+                    .h(px(FILE_HEADER_HEIGHT))
                     .px(px(12.0))
                     .flex()
                     .items_center()
@@ -801,10 +862,10 @@ impl Render for AlignedEditor {
             .child(
                 div()
                     .absolute()
-                    .top(px(0.0))
+                    .top(px(TOOLBAR_HEIGHT))
                     .left(px(pane_width))
                     .w(px(pane_width))
-                    .h(px(HEADER_HEIGHT))
+                    .h(px(FILE_HEADER_HEIGHT))
                     .px(px(12.0))
                     .flex()
                     .items_center()

@@ -125,6 +125,16 @@ impl EditorGeometry {
         .max(0.0)
     }
 
+    /// Reveal a change's first row with up to three preceding context rows.
+    /// Tall deletions show their beginning rather than jumping past the gap to
+    /// reveal the right-hand insertion caret at the end of the deleted block.
+    #[must_use]
+    pub fn change_scroll_top(self, first_row: usize, alignment_rows: usize) -> f32 {
+        let context_rows = (whole_rows(self.rows_viewport_height() / self.line_height) / 4).min(3);
+        (display_units(first_row.saturating_sub(context_rows)) * self.line_height)
+            .min(self.vertical_scroll_limit(alignment_rows))
+    }
+
     #[must_use]
     pub fn visible_row_top(self, row: usize, first_row: usize, row_offset: f32) -> f32 {
         display_units(row - first_row) * self.line_height - row_offset
