@@ -20,6 +20,7 @@ impl TextSelection {
             head: offset,
         }
     }
+
     #[must_use]
     pub fn range(self) -> Range<usize> {
         self.anchor.min(self.head)..self.anchor.max(self.head)
@@ -109,14 +110,17 @@ impl EditHistory {
             self.finish_composition(document, outcome.selection);
             return Ok(outcome);
         }
+
         let removed = document
             .text()
             .get(range.clone())
             .ok_or(InputError::InvalidRange)?
             .to_owned();
+
         // Validate the change before consuming a pending composition or redo history.
         let mut next = document.clone();
         next.replace(range.clone(), text)?;
+
         self.finish_composition(document, selection);
         *document = next;
         let after = TextSelection::caret(range.start + text.len());
@@ -127,6 +131,7 @@ impl EditHistory {
             before: selection,
             after,
         });
+
         Ok(EditOutcome {
             selection: after,
             replaced: range,
@@ -146,6 +151,7 @@ impl EditHistory {
         if text.get(selected.clone()).is_none() {
             return Err(InputError::InvalidRange);
         }
+
         let removed = document
             .text()
             .get(range.clone())
@@ -153,6 +159,7 @@ impl EditHistory {
             .to_owned();
         let mut next = document.clone();
         next.replace(range.clone(), text)?;
+
         if self.marked_range().as_ref() != Some(&range) {
             self.finish_composition(document, selection);
             self.composition = Some(Composition {
@@ -162,11 +169,13 @@ impl EditHistory {
                 before: selection,
             });
         }
+
         *document = next;
         self.composition
             .as_mut()
             .expect("composition established")
             .len = text.len();
+
         Ok(EditOutcome {
             selection: TextSelection {
                 anchor: range.start + selected.start,
@@ -186,14 +195,17 @@ impl EditHistory {
         let Some(change) = self.undo.last() else {
             return Ok(None);
         };
+
         let range = change.start..change.start + change.inserted.len();
         document.replace(range.clone(), &change.removed)?;
+
         let outcome = EditOutcome {
             selection: change.before,
             replaced: range,
             inserted_len: change.removed.len(),
         };
         self.redo.push(self.undo.pop().unwrap());
+
         Ok(Some(outcome))
     }
 
@@ -206,14 +218,17 @@ impl EditHistory {
         let Some(change) = self.redo.last() else {
             return Ok(None);
         };
+
         let range = change.start..change.start + change.removed.len();
         document.replace(range.clone(), &change.inserted)?;
+
         let outcome = EditOutcome {
             selection: change.after,
             replaced: range,
             inserted_len: change.inserted.len(),
         };
         self.undo.push(self.redo.pop().unwrap());
+
         Ok(Some(outcome))
     }
 }
@@ -243,8 +258,10 @@ pub fn from_utf16(text: &str, offset: usize) -> usize {
         if units + ch.len_utf16() > offset {
             return byte;
         }
+
         units += ch.len_utf16();
     }
+
     text.len()
 }
 
@@ -277,6 +294,7 @@ pub fn navigate(
     let head = selection.head;
     let line = document.line_at_offset(head);
     let content = document.line_content_range(line);
+
     let next = match motion {
         Motion::Left if !extend && !range.is_empty() => range.start,
         Motion::Right if !extend && !range.is_empty() => range.end,
@@ -292,6 +310,7 @@ pub fn navigate(
                     .graphemes(true)
                     .count()
             });
+
             let target = if matches!(motion, Motion::Up) {
                 line.saturating_sub(1)
             } else {
@@ -305,9 +324,11 @@ pub fn navigate(
             target.start + offset
         }
     };
+
     if !matches!(motion, Motion::Up | Motion::Down) {
         *preferred_column = None;
     }
+
     TextSelection {
         anchor: if extend { selection.anchor } else { next },
         head: next,

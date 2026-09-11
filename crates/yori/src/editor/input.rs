@@ -1,4 +1,5 @@
 //! GPUI input integration for the same aligned surface used by the read-only checkpoint.
+
 use super::{
     ActiveTheme, AlignedEditor, Alignment, App, Backspace, Bounds, Context, CopySelected,
     CutSelected, Delete, DisplayLine, EditOutcome, EntityInputHandler, Font, GUTTER_WIDTH,
@@ -43,6 +44,7 @@ impl AlignedEditor {
             Side::Right
         };
         let document = &self.document(side).document;
+
         ViewAnchor {
             side,
             offset: source_offset_at(
@@ -66,12 +68,14 @@ impl AlignedEditor {
     ) {
         self.right.refresh_after_edit(edit);
         self.alignment = Alignment::between(&self.left.document, &self.right.document);
+
         self.selection = Some(Selection {
             side: Side::Right,
             anchor: edit.selection.anchor,
             head: edit.selection.head,
         });
         self.preferred_column = None;
+
         let offset = if anchor.side == Side::Right {
             edit.map_anchor(anchor.offset)
         } else {
@@ -85,6 +89,7 @@ impl AlignedEditor {
         self.vertical_scroll = display_units(row) * LINE_HEIGHT + anchor.fraction;
         self.locate_caret_change();
         self.reveal_cursor(window, cx);
+
         cx.notify();
     }
 
@@ -99,11 +104,13 @@ impl AlignedEditor {
         if self.alignment.blocks().get(index) != Some(expected) {
             return;
         }
+
         self.finish_composition();
         let selection = self
             .right_selection()
             .unwrap_or(TextSelection::caret(expected.right.start));
         let anchor = self.view_anchor();
+
         match yori_diff::restore_block(
             &mut self.history,
             &self.left.document,
@@ -132,6 +139,7 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         let anchor = self.view_anchor();
         match self
             .history
@@ -159,6 +167,7 @@ impl AlignedEditor {
         if display.text.is_empty() {
             return (row, 0.0);
         }
+
         let display_offset = display.display_offset(offset);
         let run = TextRun {
             len: display.text.len(),
@@ -177,6 +186,7 @@ impl AlignedEditor {
             &[run],
             None,
         );
+
         (row, f32::from(line.x_for_index(display_offset)))
     }
 
@@ -184,6 +194,7 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         let (row, x) = self.cursor_position(selection.head, window, cx);
         let geometry = self.geometry();
         let y = display_units(row) * LINE_HEIGHT;
@@ -196,6 +207,7 @@ impl AlignedEditor {
         self.vertical_scroll = self
             .vertical_scroll
             .min(geometry.vertical_scroll_limit(self.alignment.rows().len()));
+
         let width = geometry.text_viewport_width();
         if x < self.horizontal_scroll {
             self.horizontal_scroll = x;
@@ -215,6 +227,7 @@ impl AlignedEditor {
         let Some(selection) = self.selection.as_ref() else {
             return;
         };
+
         let side = selection.side;
         let old = TextSelection {
             anchor: selection.anchor,
@@ -226,6 +239,7 @@ impl AlignedEditor {
             &self.right.document
         };
         let next = editing::navigate(document, old, motion, extend, &mut self.preferred_column);
+
         self.selection = Some(Selection {
             side,
             anchor: next.anchor,
@@ -233,6 +247,7 @@ impl AlignedEditor {
         });
         self.locate_caret_change();
         self.reveal_cursor(window, cx);
+
         cx.notify();
     }
 
@@ -241,6 +256,7 @@ impl AlignedEditor {
         let Some(side) = self.selection.as_ref().map(|s| s.side) else {
             return;
         };
+
         self.selection = Some(Selection {
             side,
             anchor: 0,
@@ -248,6 +264,7 @@ impl AlignedEditor {
         });
         self.locate_caret_change();
         self.preferred_column = None;
+
         cx.notify();
     }
 
@@ -255,6 +272,7 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             let range = self.history.marked_range().unwrap_or(selection.range());
             self.replace(range, &text, window, cx);
@@ -265,6 +283,7 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         if !selection.range().is_empty() {
             self.copy_selected(&CopySelected, window, cx);
             self.replace(selection.range(), "", window, cx);
@@ -283,6 +302,7 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         let mut range = selection.range();
         if range.is_empty() {
             if backwards {
@@ -291,6 +311,7 @@ impl AlignedEditor {
                 range.end = editing::next_grapheme(self.right.document.text(), range.end);
             }
         }
+
         if !range.is_empty() {
             self.replace(range, "", window, cx);
         }
@@ -300,6 +321,7 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         self.replace(selection.range(), self.right.document.newline(), window, cx);
     }
 
@@ -312,6 +334,7 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         self.replace(selection.range(), "\t", window, cx);
     }
 
@@ -327,12 +350,14 @@ impl AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         let anchor = self.view_anchor();
         let result = if redo {
             self.history.redo(&mut self.right.document, selection)
         } else {
             self.history.undo(&mut self.right.document, selection)
         };
+
         match result {
             Ok(Some(edit)) => self.finish_edit(&anchor, &edit, window, cx),
             Ok(None) => {}
@@ -363,6 +388,7 @@ impl EntityInputHandler for AlignedEditor {
         _: &mut Context<Self>,
     ) -> Option<String> {
         self.right_selection()?;
+
         let bytes = self.bytes_from_utf16(range);
         *actual = Some(self.bytes_to_utf16(bytes.clone()));
         self.right.document.text().get(bytes).map(str::to_owned)
@@ -403,10 +429,12 @@ impl EntityInputHandler for AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         let range = range
             .map(|range| self.bytes_from_utf16(range))
             .or_else(|| self.history.marked_range())
             .unwrap_or(selection.range());
+
         self.replace(range, text, window, cx);
     }
 
@@ -421,6 +449,7 @@ impl EntityInputHandler for AlignedEditor {
         let Some(selection) = self.right_selection() else {
             return;
         };
+
         let range = range
             .map(|range| self.bytes_from_utf16(range))
             .or_else(|| self.history.marked_range())
@@ -429,6 +458,7 @@ impl EntityInputHandler for AlignedEditor {
             editing::from_utf16(text, range.start)..editing::from_utf16(text, range.end)
         });
         let anchor = self.view_anchor();
+
         match self.history.replace_marked(
             &mut self.right.document,
             selection,
@@ -452,6 +482,7 @@ impl EntityInputHandler for AlignedEditor {
         cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         self.right_selection()?;
+
         let range = self.bytes_from_utf16(range);
         let (row, x) = self.cursor_position(range.start, window, cx);
         let (end_row, end_x) = self.cursor_position(range.end, window, cx);
@@ -461,6 +492,7 @@ impl EntityInputHandler for AlignedEditor {
         } else {
             1.0
         };
+
         Some(Bounds::new(
             point(
                 origin.x
@@ -490,6 +522,7 @@ pub(super) fn bind_keys(cx: &mut App) {
     } else {
         "ctrl"
     };
+
     cx.bind_keys([
         KeyBinding::new("alt-up", PreviousChange, Some(KEY_CONTEXT)),
         KeyBinding::new("alt-down", NextChange, Some(KEY_CONTEXT)),

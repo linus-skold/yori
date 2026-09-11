@@ -57,6 +57,7 @@ impl AlignedEditor {
         let Some(target) = self.navigation.advance(&self.alignment, direction) else {
             return;
         };
+
         self.selection = Some(Selection {
             side: Side::Right,
             anchor: target.right_offset,
@@ -67,6 +68,7 @@ impl AlignedEditor {
         self.vertical_scroll = self
             .geometry()
             .change_scroll_top(target.rows.start, self.alignment.rows().len());
+
         self.focus.focus(window, cx);
         cx.notify();
     }

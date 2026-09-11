@@ -1,4 +1,5 @@
 //! Presentation-only tab expansion and aligned hit mapping.
+
 use std::ops::Range;
 use yori_diff::Alignment;
 use yori_document::Document;
@@ -17,6 +18,7 @@ pub fn source_offset_at(
     let Some(alignment_row) = alignment.rows().get(row) else {
         return document.text().len();
     };
+
     let line = if left_side {
         alignment_row.left
     } else {
@@ -25,6 +27,7 @@ pub fn source_offset_at(
     let Some(line) = line else {
         return alignment.gap_offset(document, row, left_side);
     };
+
     let source_line = &document.lines()[line];
     DisplayLine::from_source(document.content(line), source_line.content.start, tab_width)
         .source_offset(display_byte)
@@ -47,9 +50,11 @@ impl DisplayLine {
         let mut boundaries = vec![(0, source_start)];
         let mut spans = Vec::new();
         let mut column = 0;
+
         for (relative, character) in text.char_indices() {
             let source = source_start + relative;
             let display_start = display.len();
+
             if character == '\t' {
                 let width = tab_width - (column % tab_width);
                 for step in 0..width {
@@ -67,11 +72,13 @@ impl DisplayLine {
                 column += unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
                 boundaries.push((display.len(), source + character.len_utf8()));
             }
+
             spans.push((
                 source..source + character.len_utf8(),
                 display_start..display.len(),
             ));
         }
+
         Self {
             text: display,
             columns: column,
@@ -112,10 +119,12 @@ impl DisplayLine {
         let Some((_, first)) = overlapping.next() else {
             return 0..0;
         };
+
         let mut range = first.clone();
         for (_, display_span) in overlapping {
             range.end = display_span.end;
         }
+
         range
     }
 }

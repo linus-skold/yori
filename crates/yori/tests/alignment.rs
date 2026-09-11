@@ -21,6 +21,7 @@ fn rows(left: &str, right: &str) -> Vec<(Option<usize>, Option<usize>, DiffKind)
 #[test]
 fn splitting_preserves_line_endings_and_final_newline_state() {
     let source = doc("one\r\n\r\nthree\nlast");
+
     assert_eq!(source.lines().len(), 4);
     assert_eq!(source.content(0), "one");
     assert_eq!(source.full_line(0), "one\r\n");
@@ -29,6 +30,7 @@ fn splitting_preserves_line_endings_and_final_newline_state() {
     assert_eq!(source.full_line(1), "\r\n");
     assert_eq!(source.lines()[2].ending, LineEnding::Lf);
     assert_eq!(source.lines()[3].ending, LineEnding::None);
+
     assert!(doc("").lines().is_empty());
     assert_eq!(doc("\n").lines().len(), 1);
 }
@@ -58,10 +60,12 @@ fn aligns_equal_modified_and_inserted_or_deleted_boundaries() {
             (Some(1), Some(1), DiffKind::Equal)
         ]
     );
+
     assert_eq!(
         rows("a\n", "b\n"),
         vec![(Some(0), Some(0), DiffKind::Modified)]
     );
+
     assert_eq!(
         rows("b\n", "a\nb\nc\n"),
         vec![
@@ -70,6 +74,7 @@ fn aligns_equal_modified_and_inserted_or_deleted_boundaries() {
             (None, Some(2), DiffKind::Added)
         ]
     );
+
     assert_eq!(
         rows("a\nb\nc\n", "b\n"),
         vec![
@@ -83,12 +88,15 @@ fn aligns_equal_modified_and_inserted_or_deleted_boundaries() {
 #[test]
 fn handles_middle_changes_empty_sides_real_blank_lines_and_final_newlines() {
     assert_eq!(rows("a\nb\nc\n", "a\nx\nc\n")[1].2, DiffKind::Modified);
+
     assert_eq!(rows("", "x\n"), vec![(None, Some(0), DiffKind::Added)]);
     assert_eq!(rows("x\n", ""), vec![(Some(0), None, DiffKind::Removed)]);
+
     assert_eq!(
         rows("a\n\nb\n", "a\nb\n")[1],
         (Some(1), None, DiffKind::Removed)
     );
+
     assert_eq!(rows("a\n", "a")[0].2, DiffKind::Modified);
     assert_eq!(rows("a\r\n", "a\n")[0].2, DiffKind::Modified);
 }
@@ -104,6 +112,7 @@ fn copy_uses_original_source_bytes_across_alignment_gaps() {
         .position(|row| row.left.is_none())
         .unwrap();
     let boundary = alignment.gap_offset(&left, gap, true);
+
     assert_eq!(boundary, "zero\r\n".len());
     assert_eq!(left.copy_range(0..left.text().len()), "zero\r\none\r\ntwo");
     assert!(!left.copy_range(0..left.text().len()).contains("inserted"));
@@ -114,12 +123,14 @@ fn leading_trailing_and_all_gap_rows_have_stable_source_affinity() {
     let empty = doc("");
     let content = doc("a\nb\n");
     let alignment = Alignment::between(&empty, &content);
+
     assert_eq!(alignment.gap_offset(&empty, 0, true), 0);
     assert_eq!(alignment.gap_offset(&empty, 1, true), 0);
 
     let left = doc("b\n");
     let right = doc("a\nb\nc\n");
     let alignment = Alignment::between(&left, &right);
+
     assert_eq!(alignment.gap_offset(&left, 0, true), 0);
     assert_eq!(alignment.gap_offset(&left, 2, true), left.text().len());
 }
@@ -127,6 +138,7 @@ fn leading_trailing_and_all_gap_rows_have_stable_source_affinity() {
 #[test]
 fn unicode_and_tabs_map_shaped_display_boundaries_to_source_bytes() {
     let display = DisplayLine::from_source("α\t界", 10, 4);
+
     assert_eq!(display.text, "α   界");
     assert_eq!(display.columns(), 6);
     assert_eq!(display.source_offset(0), 10);
@@ -134,6 +146,7 @@ fn unicode_and_tabs_map_shaped_display_boundaries_to_source_bytes() {
     assert_eq!(display.source_offset(display.text.len()), 16);
     assert_eq!(display.display_range(12..13), 2..5);
     assert_eq!(display.display_range(13..16), 5..8);
+
     for (display_byte, _) in display.text.char_indices() {
         assert!("α\t界".is_char_boundary(display.source_offset(display_byte) - 10));
     }
@@ -145,6 +158,7 @@ fn row_below_document_reaches_original_eof_terminators() {
         let document = doc(source);
         let alignment = Alignment::between(&document, &document);
         let last_row = alignment.rows().len().saturating_sub(1);
+
         let line_end = source_offset_at(&alignment, &document, last_row, true, usize::MAX, 4);
         assert_eq!(
             line_end,
@@ -168,6 +182,7 @@ fn tab_expanded_horizontal_extent_can_reveal_the_final_source_position() {
     let viewport_width = 640.0;
     let limit = horizontal_scroll_limit(columns, cell_width, viewport_width);
     let tail_after_full_scroll = display_units(columns) * cell_width - limit;
+
     assert!(tail_after_full_scroll <= viewport_width);
     assert!(limit > display_units(document.lines()[0].content.len()) * 12.0);
 }
@@ -186,6 +201,7 @@ fn local_editor_geometry_is_independent_of_desktop_placement() {
         in_gutter: false,
         text_x: 229.0,
     };
+
     assert_eq!(
         geometry.hit(window_local_pointer.0, window_local_pointer.1, 11.0, 37.0),
         expected
@@ -203,6 +219,7 @@ fn local_editor_geometry_is_independent_of_desktop_placement() {
             global_pointer.1 - desktop_origin.1,
         );
         let hit = geometry.hit(event_position.0, event_position.1, 11.0, 37.0);
+
         assert_eq!(hit, expected);
         assert_eq!(
             source_offset_at(&alignment, &document, hit.row, hit.left_side, 2, 4),
@@ -218,6 +235,7 @@ fn local_editor_geometry_is_independent_of_desktop_placement() {
 )]
 fn geometry_keeps_gutter_and_header_outside_scrolled_content() {
     let geometry = EditorGeometry::new(21.0, 17.0, 1_000.0, 700.0, 42.0, 58.0, 20.0);
+
     assert_eq!(geometry.pane_width(), 500.0);
     assert_eq!(geometry.text_viewport_width(), 442.0);
     assert_eq!(geometry.rows_viewport_height(), 658.0);
@@ -245,6 +263,7 @@ fn stress_mapping_handles_one_hundred_thousand_lines() {
     let started = std::time::Instant::now();
     let mut left = String::new();
     let mut right = String::new();
+
     for line in 0..100_000 {
         writeln!(left, "fn row_{line}() -> usize {{ {line} }}").unwrap();
         if line % 997 == 0 {
@@ -253,13 +272,16 @@ fn stress_mapping_handles_one_hundred_thousand_lines() {
         let value = if line % 503 == 0 { line + 1 } else { line };
         writeln!(right, "fn row_{line}() -> usize {{ {value} }}").unwrap();
     }
+
     let left = doc(&left);
     let right = doc(&right);
     let max_columns = max_display_columns(&left, 4).max(max_display_columns(&right, 4));
     let alignment = Alignment::between(&left, &right);
+
     assert!(max_columns >= 30);
     assert!(alignment.rows().len() >= 100_000);
     assert_eq!(left.copy_range(0..left.text().len()), left.text());
+
     eprintln!(
         "100k split/extent/alignment/source-copy check: {:?}, {} alignment rows, {max_columns} display columns",
         started.elapsed(),

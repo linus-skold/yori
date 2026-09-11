@@ -108,6 +108,7 @@ impl PaneDocument {
                 highlighter.update(None, &Rope::from(document.text()), None);
                 highlighter
             });
+
         Self {
             path,
             max_display_columns,
@@ -118,6 +119,7 @@ impl PaneDocument {
 
     fn refresh_after_edit(&mut self, edit: &EditOutcome) {
         self.max_display_columns = max_display_columns(&self.document, TAB_WIDTH);
+
         if let Some(highlighter) = &mut self.highlighter {
             let next = Rope::from(self.document.text());
             let position = |rope: &Rope, offset| {
@@ -127,6 +129,7 @@ impl PaneDocument {
                     offset - rope.line_to_byte_idx(row, ropey::LineType::LF),
                 )
             };
+
             let new_end = edit.replaced.start + edit.inserted_len;
             let change = tree_sitter::InputEdit {
                 start_byte: edit.replaced.start,
@@ -136,6 +139,7 @@ impl PaneDocument {
                 old_end_position: position(highlighter.text(), edit.replaced.end),
                 new_end_position: position(&next, new_end),
             };
+
             highlighter.update(Some(change), &next, None);
         }
     }
@@ -164,8 +168,10 @@ impl AlignedEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let alignment = Alignment::between(&left.document, &right.document);
+
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+
         Self {
             left,
             right,
@@ -257,12 +263,14 @@ impl AlignedEditor {
                 ),
             );
         };
+
         let source_line = &pane.document.lines()[line_index];
         let display = DisplayLine::from_source(
             pane.document.content(line_index),
             source_line.content.start,
             TAB_WIDTH,
         );
+
         if hit.text_x <= 0.0 || display.text.is_empty() {
             return (
                 side,
@@ -296,6 +304,7 @@ impl AlignedEditor {
             None,
         );
         let display_offset = shaped.closest_index_for_x(px(hit.text_x));
+
         (
             side,
             source_offset_at(
@@ -328,10 +337,12 @@ impl AlignedEditor {
                 .shape_line(" ".into(), theme.mono_font_size, &[run], None)
                 .width(),
         );
+
         let max_columns = self
             .left
             .max_display_columns
             .max(self.right.max_display_columns);
+
         horizontal_scroll_limit(
             max_columns,
             cell_width,
@@ -343,18 +354,21 @@ impl AlignedEditor {
         self.finish_composition();
         self.preferred_column = None;
         self.focus.focus(window, cx);
+
         let (side, offset) = self.source_offset_at(event.position, window, cx);
         let anchor = self
             .selection
             .as_ref()
             .filter(|selection| event.modifiers.shift && selection.side == side)
             .map_or(offset, |selection| selection.anchor);
+
         self.selection = Some(Selection {
             side,
             anchor,
             head: offset,
         });
         self.locate_pointer_change(event.position);
+
         cx.notify();
     }
 
@@ -362,12 +376,14 @@ impl AlignedEditor {
         if !event.dragging() {
             return;
         }
+
         let (side, offset) = self.source_offset_at(event.position, window, cx);
         if let Some(selection) = &mut self.selection
             && selection.side == side
         {
             selection.head = offset;
             self.locate_pointer_change(event.position);
+
             cx.notify();
         }
     }
@@ -383,12 +399,15 @@ impl AlignedEditor {
             delta.0
         };
         let vertical = if event.shift { 0.0 } else { delta.1 };
+
         let max_vertical = self
             .geometry()
             .vertical_scroll_limit(self.alignment.rows().len());
         self.vertical_scroll = (self.vertical_scroll - vertical).clamp(0.0, max_vertical);
+
         let max_horizontal = self.max_horizontal_scroll(window, cx);
         self.horizontal_scroll = (self.horizontal_scroll - horizontal).clamp(0.0, max_horizontal);
+
         cx.notify();
         cx.stop_propagation();
     }
@@ -401,11 +420,13 @@ impl AlignedEditor {
         if range.is_empty() {
             return;
         }
+
         let text = self
             .document(selection.side)
             .document
             .copy_range(range)
             .to_owned();
+
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
@@ -418,6 +439,7 @@ impl AlignedEditor {
         let Some(highlighter) = &pane.highlighter else {
             return Vec::new();
         };
+
         highlighter
             .styles(&source_range, cx.theme().highlight_theme.as_ref())
             .into_iter()
@@ -439,19 +461,23 @@ impl AlignedEditor {
     ) -> Vec<(Range<usize>, HighlightStyle)> {
         let source_range = pane.document.lines()[line_index].content.clone();
         let syntax = Self::syntax_highlights(pane, source_range.clone(), display, cx);
+
         let selected = self.selection.as_ref().and_then(|selection| {
             if selection.side != side {
                 return None;
             }
+
             let range = selection.range();
             let overlap = range.start.max(source_range.start)..range.end.min(source_range.end);
             (overlap.start < overlap.end).then(|| display.display_range(overlap))
         });
+
         let marked = (side == Side::Right)
             .then(|| self.history.marked_range())
             .flatten()
             .map(|range| display.display_range(range))
             .filter(|range| !range.is_empty());
+
         let changed: Vec<_> = match side {
             Side::Left => &intraline.left,
             Side::Right => &intraline.right,
@@ -460,6 +486,7 @@ impl AlignedEditor {
         .map(|range| display.display_range(range.clone()))
         .filter(|range| !range.is_empty())
         .collect();
+
         highlighting::compose(
             display.text.len(),
             &syntax,
@@ -499,6 +526,7 @@ impl AlignedEditor {
     ) -> impl IntoElement {
         let pane_width = geometry.pane_width();
         let text_viewport_width = geometry.text_viewport_width();
+
         let row = &self.alignment.rows()[row_index];
         let pane = self.document(side);
         let line = match side {
@@ -506,6 +534,7 @@ impl AlignedEditor {
             Side::Right => row.right,
         };
         let background = Self::row_background(row.kind, side);
+
         let mut container = div()
             .absolute()
             .top(px(top))
@@ -525,6 +554,7 @@ impl AlignedEditor {
             let highlights = self.text_highlights(side, pane, line_index, &display, intraline, cx);
             let text =
                 StyledText::new(SharedString::from(display.text)).with_highlights(highlights);
+
             container = container
                 .child(
                     div()
@@ -554,6 +584,7 @@ impl AlignedEditor {
                         ),
                 );
         }
+
         if self
             .navigation
             .current(&self.alignment)
@@ -569,6 +600,7 @@ impl AlignedEditor {
                     .bg(cx.theme().primary),
             );
         }
+
         container
     }
 
@@ -583,6 +615,7 @@ impl AlignedEditor {
         } else {
             format!("{count} changes")
         };
+
         div()
             .absolute()
             .top(px(0.0))
@@ -647,12 +680,14 @@ impl Render for AlignedEditor {
         let width = geometry.pane_width() * 2.0;
         let pane_width = geometry.pane_width();
         let text_viewport_width = geometry.text_viewport_width();
+
         self.horizontal_scroll = self
             .horizontal_scroll
             .min(self.max_horizontal_scroll(window, cx));
         self.vertical_scroll = self
             .vertical_scroll
             .min(geometry.vertical_scroll_limit(self.alignment.rows().len()));
+
         let first_row = whole_rows(self.vertical_scroll / LINE_HEIGHT);
         let row_offset = self.vertical_scroll % LINE_HEIGHT;
         let visible_count =
@@ -669,12 +704,14 @@ impl Render for AlignedEditor {
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move));
+
         for row_index in first_row..end_row {
             let top = geometry.visible_row_top(row_index, first_row, row_offset);
             // Fine-grained work is viewport-only and shared by both cells.
             let intraline =
                 self.alignment
                     .intraline(&self.left.document, &self.right.document, row_index);
+
             rows = rows
                 .child(self.render_pane_row(Side::Left, row_index, top, geometry, &intraline, cx))
                 .child(self.render_pane_row(Side::Right, row_index, top, geometry, &intraline, cx));
@@ -684,6 +721,7 @@ impl Render for AlignedEditor {
             && let Some(selection) = self.right_selection()
         {
             let (row, x) = self.cursor_position(selection.head, window, cx);
+
             rows = rows.child(
                 div()
                     .absolute()
@@ -703,6 +741,7 @@ impl Render for AlignedEditor {
                     ),
             );
         }
+
         // One control per changed run, including runs with no baseline lines.
         // Keep a tall block's control reachable when its first row scrolls away.
         let first_block = self
@@ -713,10 +752,12 @@ impl Render for AlignedEditor {
             if block.rows.start >= end_row {
                 break;
             }
+
             let top = ((display_units(block.rows.start) * LINE_HEIGHT - self.vertical_scroll)
                 .max(0.0))
             .min(display_units(block.rows.end) * LINE_HEIGHT - self.vertical_scroll - LINE_HEIGHT);
             let expected = block.clone();
+
             rows = rows.child(
                 div()
                     .absolute()
@@ -741,9 +782,11 @@ impl Render for AlignedEditor {
                     ),
             );
         }
+
         let input_entity = cx.entity();
         let input_focus = self.focus.clone();
         let measured_content_bounds = Rc::clone(&self.content_bounds);
+
         div()
             .id("aligned-editor")
             .key_context(KEY_CONTEXT)
@@ -909,6 +952,7 @@ mod tests {
             anchor: offset,
             head: offset + 5,
         };
+
         let edit = history
             .replace(
                 &mut pane.document,
@@ -918,6 +962,7 @@ mod tests {
             )
             .unwrap();
         pane.refresh_after_edit(&edit);
+
         let fresh = PaneDocument::new(pane.path.clone(), pane.document.clone());
         let theme = HighlightTheme::default_dark();
         let range = 0..pane.document.text().len();
@@ -926,6 +971,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .styles(&range, theme.as_ref());
+
         assert!(!expected.is_empty());
         assert_eq!(
             pane.highlighter
@@ -934,11 +980,13 @@ mod tests {
                 .styles(&range, theme.as_ref()),
             expected
         );
+
         let undo = history
             .undo(&mut pane.document, edit.selection)
             .unwrap()
             .unwrap();
         pane.refresh_after_edit(&undo);
+
         assert_eq!(pane.document.text(), original);
         assert_eq!(
             pane.highlighter.as_ref().unwrap().text().to_string(),
@@ -950,13 +998,16 @@ mod tests {
     #[ignore = "explicit 5k editing latency measurement"]
     fn five_thousand_line_edit_refresh_and_realign() {
         use std::fmt::Write as _;
+
         let mut source = String::new();
         for line in 0..5_000 {
             writeln!(source, "fn row_{line}() -> usize {{ {line} }}").unwrap();
         }
+
         let left = Document::from_bytes(source.as_bytes().to_vec()).unwrap();
         let mut pane = pane(&source);
         let mut history = EditHistory::default();
+
         let started = std::time::Instant::now();
         for _ in 0..10 {
             let edit = history
@@ -968,18 +1019,22 @@ mod tests {
                 )
                 .unwrap();
             pane.refresh_after_edit(&edit);
+
             let alignment = Alignment::between(&left, &pane.document);
             assert_eq!(alignment.rows().len(), 5_001);
+
             let undo = history
                 .undo(&mut pane.document, edit.selection)
                 .unwrap()
                 .unwrap();
             pane.refresh_after_edit(&undo);
+
             assert_eq!(
                 Alignment::between(&left, &pane.document).rows().len(),
                 5_000
             );
         }
+
         eprintln!(
             "5k: 20 edit/syntax/realignment operations in {:?}",
             started.elapsed()

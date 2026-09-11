@@ -54,6 +54,7 @@ impl Document {
         if bytes.contains(&0) {
             return Err(InputError::ContainsNul);
         }
+
         let text = String::from_utf8(bytes).map_err(|_| InputError::InvalidUtf8)?;
         let lines = split_lines(&text)?;
         Ok(Self { text, lines })
@@ -91,6 +92,7 @@ impl Document {
         assert!(range.start <= range.end && range.end <= self.text.len());
         assert!(self.text.is_char_boundary(range.start));
         assert!(self.text.is_char_boundary(range.end));
+
         &self.text[range]
     }
 
@@ -102,11 +104,14 @@ impl Document {
         if replacement.contains('\0') {
             return Err(InputError::ContainsNul);
         }
+
         let mut text = self.text.clone();
         text.replace_range(range, replacement);
         let lines = split_lines(&text)?;
+
         self.text = text;
         self.lines = lines;
+
         Ok(())
     }
 
@@ -155,6 +160,7 @@ fn split_lines(text: &str) -> Result<Vec<SourceLine>, InputError> {
     let mut lines = Vec::new();
     let mut start = 0;
     let mut index = 0;
+
     while index < bytes.len() {
         match bytes[index] {
             b'\n' => {
@@ -163,6 +169,7 @@ fn split_lines(text: &str) -> Result<Vec<SourceLine>, InputError> {
                 } else {
                     (index, LineEnding::Lf)
                 };
+
                 lines.push(SourceLine {
                     content: start..content_end,
                     full: start..index + 1,
@@ -177,6 +184,7 @@ fn split_lines(text: &str) -> Result<Vec<SourceLine>, InputError> {
         }
         index += 1;
     }
+
     if start < bytes.len() {
         lines.push(SourceLine {
             content: start..bytes.len(),
@@ -184,5 +192,6 @@ fn split_lines(text: &str) -> Result<Vec<SourceLine>, InputError> {
             ending: LineEnding::None,
         });
     }
+
     Ok(lines)
 }

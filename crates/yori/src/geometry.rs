@@ -106,6 +106,7 @@ impl EditorGeometry {
         };
         let row_y = (local_y - self.header_height + vertical_scroll).max(0.0);
         let in_gutter = pane_x < self.gutter_width;
+
         LocalHit {
             left_side,
             row: whole_rows(row_y / self.line_height),

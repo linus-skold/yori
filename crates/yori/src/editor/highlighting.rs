@@ -26,6 +26,7 @@ pub(super) fn compose(
     }
     boundaries.sort_unstable();
     boundaries.dedup();
+
     boundaries
         .windows(2)
         .filter_map(|pair| {
@@ -33,15 +34,18 @@ pub(super) fn compose(
             if range.is_empty() {
                 return None;
             }
+
             let mut style = syntax
                 .iter()
                 .find(|(span, _)| span.start <= range.start && span.end >= range.end)
                 .map(|(_, style)| *style)
                 .unwrap_or_default();
             let overlaps = |span: &Range<usize>| span.start < range.end && span.end > range.start;
+
             if changed.iter().any(overlaps) {
                 style.background_color = Some(colors.changed);
             }
+
             // A text selection must remain unambiguous on top of diff emphasis.
             if selected.is_some_and(overlaps) {
                 style.background_color = Some(colors.selected);
@@ -53,6 +57,7 @@ pub(super) fn compose(
                     wavy: false,
                 });
             }
+
             Some((range, style))
         })
         .collect()
@@ -79,12 +84,15 @@ mod tests {
             },
         )];
         let changes = vec![1..5, 7..8];
+
         let runs = compose(8, &syntax, &changes, Some(&(2..4)), Some(&(3..5)), &colors);
+
         for byte in 0..8 {
             let (_, style) = runs
                 .iter()
                 .find(|(range, _)| range.contains(&byte))
                 .unwrap();
+
             assert_eq!(style.color, (byte < 6).then_some(foreground));
             assert_eq!(
                 style.background_color,
@@ -98,6 +106,7 @@ mod tests {
             );
             assert_eq!(style.underline.is_some(), (3..5).contains(&byte));
         }
+
         assert_eq!(runs.first().unwrap().0.start, 0);
         assert_eq!(runs.last().unwrap().0.end, 8);
         assert!(runs.windows(2).all(|pair| pair[0].0.end == pair[1].0.start));

@@ -54,9 +54,11 @@ impl Alignment {
             .iter()
             .map(|line| right.copy_range(line.full.clone()))
             .collect();
+
         let diff = TextDiff::configure()
             .algorithm(Algorithm::Myers)
             .diff_slices(&left_lines, &right_lines);
+
         let mut rows = Vec::new();
         let mut blocks: Vec<ChangeBlock> = Vec::new();
         let byte_boundary = |doc: &Document, line: usize| {
@@ -64,13 +66,16 @@ impl Alignment {
                 .get(line)
                 .map_or(doc.text().len(), |line| line.full.start)
         };
+
         for op in diff.ops() {
             let old = op.old_range();
             let new = op.new_range();
+
             if op.tag() != DiffTag::Equal {
                 let end_row = rows.len() + old.len().max(new.len());
                 let left_bytes = byte_boundary(left, old.start)..byte_boundary(left, old.end);
                 let right_bytes = byte_boundary(right, new.start)..byte_boundary(right, new.end);
+
                 if let Some(block) = blocks
                     .last_mut()
                     .filter(|block| block.rows.end == rows.len())
@@ -86,6 +91,7 @@ impl Alignment {
                     });
                 }
             }
+
             match op.tag() {
                 DiffTag::Equal => {
                     rows.extend(old.zip(new).map(|(left, right)| AlignmentRow {
@@ -123,6 +129,7 @@ impl Alignment {
                 }
             }
         }
+
         Self { rows, blocks }
     }
 
@@ -149,9 +156,11 @@ impl Alignment {
         else {
             return IntralineDiff::default();
         };
+
         let mut changes = IntralineDiff::between(left.content(*old), right.content(*new));
         let old_start = left.lines()[*old].content.start;
         let new_start = right.lines()[*new].content.start;
+
         for range in &mut changes.left {
             range.start += old_start;
             range.end += old_start;
@@ -160,6 +169,7 @@ impl Alignment {
             range.start += new_start;
             range.end += new_start;
         }
+
         changes
     }
 
@@ -168,6 +178,7 @@ impl Alignment {
     pub fn row_for_offset(&self, document: &Document, offset: usize, left_side: bool) -> usize {
         let source_line = document.line_at_offset(offset);
         let side_line = |row: &AlignmentRow| if left_side { row.left } else { row.right };
+
         if source_line < document.lines().len() {
             self.rows
                 .iter()
@@ -195,16 +206,19 @@ impl Alignment {
         if let Some(line) = self.rows.get(row).and_then(line_at) {
             return document.lines()[line].content.start;
         }
+
         for candidate in self.rows[..row.min(self.rows.len())].iter().rev() {
             if let Some(line) = line_at(candidate) {
                 return document.lines()[line].full.end;
             }
         }
+
         for candidate in self.rows.get(row.saturating_add(1)..).unwrap_or_default() {
             if let Some(line) = line_at(candidate) {
                 return document.lines()[line].full.start;
             }
         }
+
         0
     }
 }
@@ -222,5 +236,6 @@ pub fn restore_block(
         .text()
         .get(block.left.clone())
         .ok_or(InputError::InvalidRange)?;
+
     history.replace(document, selection, block.right.clone(), text)
 }

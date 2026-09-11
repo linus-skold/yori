@@ -28,11 +28,13 @@ impl IntralineDiff {
         let (Some(old), Some(new)) = (tokens(left), tokens(right)) else {
             return Self::whole_lines(left, right);
         };
+
         let old_text: Vec<_> = old.iter().map(|range| &left[range.clone()]).collect();
         let new_text: Vec<_> = new.iter().map(|range| &right[range.clone()]).collect();
         let diff = TextDiff::configure()
             .algorithm(Algorithm::Myers)
             .diff_slices(&old_text, &new_text);
+
         let mut result = Self::default();
         for op in diff.ops() {
             if op.tag() != DiffTag::Equal {
@@ -40,6 +42,7 @@ impl IntralineDiff {
                 push_range(&mut result.right, &new, op.new_range());
             }
         }
+
         result
     }
 
@@ -51,6 +54,7 @@ impl IntralineDiff {
                 std::iter::once(0..text.len()).collect()
             }
         };
+
         Self {
             left: nonempty(left),
             right: nonempty(right),
@@ -68,6 +72,7 @@ enum TokenKind {
 fn tokens(text: &str) -> Option<Vec<Range<usize>>> {
     let mut result: Vec<Range<usize>> = Vec::new();
     let mut previous = TokenKind::Punctuation;
+
     for (start, grapheme) in text.grapheme_indices(true) {
         let kind = if grapheme.chars().all(char::is_whitespace) {
             TokenKind::Space
@@ -77,6 +82,7 @@ fn tokens(text: &str) -> Option<Vec<Range<usize>>> {
             TokenKind::Punctuation
         };
         let end = start + grapheme.len();
+
         if kind != TokenKind::Punctuation && kind == previous {
             if let Some(last) = result.last_mut() {
                 last.end = end;
@@ -85,10 +91,12 @@ fn tokens(text: &str) -> Option<Vec<Range<usize>>> {
             if result.len() == MAX_TOKENS {
                 return None;
             }
+
             result.push(start..end);
         }
         previous = kind;
     }
+
     Some(result)
 }
 

@@ -73,6 +73,7 @@ impl ChangeNavigation {
                 (_, ChangeDirection::Next) => 0,
             }
         };
+
         blocks.get(index).map(|_| index)
     }
 
@@ -83,9 +84,11 @@ impl ChangeNavigation {
     ) -> Option<ChangeTarget> {
         let index = self.target(alignment, direction)?;
         let block = &alignment.blocks()[index];
+
         // Keep the change itself selected even when a deletion's right-hand
         // insertion position maps to an unchanged row or the EOF canvas.
         self.anchor = Anchor::Change(index);
+
         Some(ChangeTarget {
             index,
             rows: block.rows.clone(),
@@ -116,17 +119,21 @@ mod tests {
         let right = doc("new\nkeep\nend\nadded\n");
         let alignment = Alignment::between(&left, &right);
         assert_eq!(alignment.blocks().len(), 3);
+
         let mut nav = ChangeNavigation::default();
         assert_eq!(nav.current(&alignment), None);
         assert_eq!(nav.target(&alignment, Previous), None);
+
         for index in 0..3 {
             let target = nav.advance(&alignment, Next).unwrap();
+
             assert_eq!(target.index, index);
             assert_eq!(target.right_offset, alignment.blocks()[index].right.start);
             assert_eq!(target.rows, alignment.blocks()[index].rows);
             assert_eq!(nav.current(&alignment), Some(index));
         }
         assert!(nav.advance(&alignment, Next).is_none());
+
         assert_eq!(nav.advance(&alignment, Previous).unwrap().index, 1);
         assert_eq!(nav.advance(&alignment, Previous).unwrap().index, 0);
         assert!(nav.advance(&alignment, Previous).is_none());
@@ -139,15 +146,19 @@ mod tests {
         let right = doc("same\nnew\nbetween\nnew again\nend\n");
         let alignment = Alignment::between(&left, &right);
         let mut nav = ChangeNavigation::default();
+
         nav.locate(0);
         assert_eq!(nav.target(&alignment, Next), Some(0));
+
         nav.locate(1);
         assert_eq!(nav.current(&alignment), Some(0));
         assert_eq!(nav.target(&alignment, Next), Some(1));
+
         nav.locate(2);
         assert_eq!(nav.current(&alignment), None);
         assert_eq!(nav.target(&alignment, Previous), Some(0));
         assert_eq!(nav.target(&alignment, Next), Some(1));
+
         nav.locate(5);
         assert_eq!(nav.target(&alignment, Previous), Some(1));
         assert_eq!(nav.target(&alignment, Next), None);
@@ -164,7 +175,9 @@ mod tests {
             let (left, right) = (doc(left), doc(right));
             let alignment = Alignment::between(&left, &right);
             let mut nav = ChangeNavigation::default();
+
             let target = nav.advance(&alignment, Next).unwrap();
+
             assert_eq!(target.right_offset, alignment.blocks()[0].right.start);
             assert!(right.text().is_char_boundary(target.right_offset));
             assert_eq!(nav.current(&alignment), Some(0));
@@ -179,8 +192,10 @@ mod tests {
         let mut right = doc("changed\nkeep\ndifferent\n");
         let alignment = Alignment::between(&left, &right);
         let mut nav = ChangeNavigation::default();
+
         nav.advance(&alignment, Next).unwrap();
         nav.advance(&alignment, Next).unwrap();
+
         let mut history = EditHistory::default();
         let edit = restore_block(
             &mut history,
@@ -190,11 +205,14 @@ mod tests {
             &alignment.blocks()[1],
         )
         .unwrap();
+
         let alignment = Alignment::between(&left, &right);
         nav.locate(alignment.row_for_offset(&right, edit.selection.head, false));
+
         assert_eq!(nav.current(&alignment), None);
         assert_eq!(nav.target(&alignment, Previous), Some(0));
         assert_eq!(nav.target(&alignment, Next), None);
+
         let equal = Alignment::between(&left, &left);
         nav.locate(0);
         assert!(nav.advance(&equal, Next).is_none());
