@@ -1,8 +1,10 @@
 //! Headless line comparison, alignment, and undoable baseline restoration.
 
 mod intraline;
+mod selection_restore;
 
 pub use intraline::IntralineDiff;
+pub use selection_restore::{SelectionRestore, restore_selection};
 
 use similar::{Algorithm, DiffTag, TextDiff};
 use std::ops::Range;

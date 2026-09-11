@@ -6,15 +6,12 @@ mod change_navigation;
 mod chrome;
 mod highlighting;
 mod input;
+mod restoration;
 
 use crate::appearance;
 use yori_document::editing::{EditHistory, EditOutcome, Motion};
 
-use gpui_kit::component::{
-    ActiveTheme, ElementExt, IconName, Sizable,
-    button::{Button, ButtonVariants},
-    highlighter::SyntaxHighlighter,
-};
+use gpui_kit::component::{ActiveTheme, ElementExt, highlighter::SyntaxHighlighter};
 use gpui_kit::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, Font, HighlightStyle, InteractiveElement, IntoElement, KeyBinding, MouseButton,
@@ -49,6 +46,7 @@ gpui_kit::actions!(
         CopySelected,
         CutSelected,
         Paste,
+        RestoreSelectedLines,
         SelectAll,
         Undo,
         Redo,
@@ -762,47 +760,7 @@ impl AlignedEditor {
             );
         }
 
-        // One control per changed run, including runs with no baseline lines.
-        // Keep a tall block's control reachable when its first row scrolls away.
-        let first_block = self
-            .alignment
-            .blocks()
-            .partition_point(|b| b.rows.end <= first_row);
-        for (index, block) in self.alignment.blocks().iter().enumerate().skip(first_block) {
-            if block.rows.start >= end_row {
-                break;
-            }
-
-            let top = ((display_units(block.rows.start) * LINE_HEIGHT - self.vertical_scroll)
-                .max(0.0))
-            .min(display_units(block.rows.end) * LINE_HEIGHT - self.vertical_scroll - LINE_HEIGHT);
-            let expected = block.clone();
-
-            rows = rows.child(
-                div()
-                    .absolute()
-                    .left(px(pane_width + 1.0))
-                    .top(px(top))
-                    .w(px(RESTORE_WIDTH - 2.0))
-                    .h(px(LINE_HEIGHT))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_move(|_, _, cx| cx.stop_propagation())
-                    .child(
-                        Button::new(("restore-block", index))
-                            .icon(IconName::ArrowRight)
-                            .accessibility_label("Restore block from baseline")
-                            .ghost()
-                            .compact()
-                            .with_size(px(LINE_HEIGHT))
-                            .w(px(RESTORE_WIDTH - 2.0))
-                            .tooltip("Restore this block from the left (undo: Ctrl+Z)")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.restore_block(index, &expected, window, cx);
-                            })),
-                    ),
-            );
-        }
+        rows = rows.child(self.render_restore_controls(geometry, cx));
 
         let input_entity = cx.entity();
         let input_focus = self.focus.clone();
@@ -823,6 +781,7 @@ impl AlignedEditor {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::previous_change))
             .on_action(cx.listener(Self::next_change))
+            .on_action(cx.listener(Self::restore_selected_lines))
             .on_action(cx.listener(Self::copy_selected))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))

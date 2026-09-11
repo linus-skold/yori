@@ -5,9 +5,9 @@ use super::{
     CutSelected, Delete, DisplayLine, EditOutcome, EntityInputHandler, Font, GUTTER_WIDTH,
     HEADER_HEIGHT, InsertTab, KEY_CONTEXT, KeyBinding, LINE_HEIGHT, Motion, MoveDown, MoveEnd,
     MoveFinish, MoveHome, MoveLeft, MoveRight, MoveStart, MoveUp, Newline, NextChange, Paste,
-    Pixels, PreviousChange, Range, Redo, SelectAll, SelectDown, SelectEnd, SelectHome, SelectLeft,
-    SelectRight, SelectUp, Selection, Side, TAB_WIDTH, TextRun, UTF16Selection, Undo, Window,
-    point, px, source_offset_at,
+    Pixels, PreviousChange, Range, Redo, RestoreSelectedLines, SelectAll, SelectDown, SelectEnd,
+    SelectHome, SelectLeft, SelectRight, SelectUp, Selection, Side, TAB_WIDTH, TextRun,
+    UTF16Selection, Undo, Window, point, px, source_offset_at,
 };
 use yori::geometry::{display_units, whole_rows};
 use yori_document::editing::{self, TextSelection};
@@ -128,6 +128,52 @@ impl AlignedEditor {
             }
             Err(error) => {
                 eprintln!("block restoration rejected: {error}");
+                window.play_system_bell();
+            }
+        }
+    }
+
+    pub(super) fn restore_selected_lines(
+        &mut self,
+        _: &RestoreSelectedLines,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(plan) = self.selection_restore() {
+            self.apply_selection_restore(&plan, window, cx);
+        }
+    }
+
+    pub(super) fn apply_selection_restore(
+        &mut self,
+        expected: &yori_diff::SelectionRestore,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The preview must still describe the current selection and alignment.
+        if self.selection_restore().as_ref() != Some(expected) {
+            return;
+        }
+
+        self.finish_composition();
+        let selection = self
+            .right_selection()
+            .unwrap_or(TextSelection::caret(expected.local.start));
+        let anchor = self.view_anchor();
+
+        match yori_diff::restore_selection(
+            &mut self.history,
+            &self.left.document,
+            &mut self.right.document,
+            selection,
+            expected,
+        ) {
+            Ok(edit) => {
+                self.focus.focus(window, cx);
+                self.finish_edit(&anchor, &edit, window, cx);
+            }
+            Err(error) => {
+                eprintln!("selected-line restoration rejected: {error}");
                 window.play_system_bell();
             }
         }
@@ -530,6 +576,7 @@ pub(super) fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("alt-up", PreviousChange, Some(KEY_CONTEXT)),
         KeyBinding::new("alt-down", NextChange, Some(KEY_CONTEXT)),
+        KeyBinding::new("alt-enter", RestoreSelectedLines, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-c"), CopySelected, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-v"), Paste, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-x"), CutSelected, Some(KEY_CONTEXT)),

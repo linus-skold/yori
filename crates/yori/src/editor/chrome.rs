@@ -41,6 +41,11 @@ impl AlignedEditor {
             format!("{count} changes")
         };
 
+        let restore = self.selection_restore();
+        let label = restore
+            .as_ref()
+            .map_or(label, |plan| self.restore_description(plan));
+
         div()
             .absolute()
             .top(px(0.0))
@@ -106,6 +111,17 @@ impl AlignedEditor {
                     .text_color(cx.theme().muted_foreground)
                     .child(label),
             )
+            .children(restore.map(|plan| {
+                Button::new("restore-selected-lines")
+                    .icon(IconName::ArrowRight)
+                    .label("Restore lines")
+                    .ghost()
+                    .with_size(px(28.0))
+                    .tooltip("Restore outlined lines from baseline (Alt+Enter; undo: Ctrl+Z)")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.apply_selection_restore(&plan, window, cx);
+                    }))
+            }))
             .child(
                 div()
                     .flex_shrink_0()
