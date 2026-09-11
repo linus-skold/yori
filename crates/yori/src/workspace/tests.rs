@@ -155,6 +155,66 @@ fn copy_active_text(window: &mut Window, cx: &mut App) -> String {
 }
 
 #[gpui_kit::test]
+fn vim_preference_is_shared_but_typing_history_and_pending_commands_are_tab_local(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, cx) = harness(cx);
+    let original =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/after.rs"))
+            .unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let left = temporary.path().join("left.txt");
+    let right = temporary.path().join("right.txt");
+    std::fs::write(&left, "baseline\n").unwrap();
+    std::fs::write(&right, "local\n").unwrap();
+
+    cx.update(|window, cx| window.click("vim-mode", cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        window.press("i", cx);
+        window.input("prefix", cx);
+
+        workspace.update(cx, |view, cx| {
+            view.open_paths(&left, &right, window, cx);
+        });
+        window.render_frame(cx);
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        // A newly opened tab inherits Vim mode, not the other tab's Insert state.
+        window.press("i", cx);
+        window.input("new", cx);
+        window.press("escape", cx);
+        assert_eq!(copy_active_text(window, cx), "newlocal\n");
+
+        window.press("escape", cx);
+        window.press("d", cx);
+        workspace.update(cx, |view, cx| view.activate(0, window, cx));
+        window.render_frame(cx);
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        window.press("u", cx);
+        assert_eq!(copy_active_text(window, cx), original);
+
+        workspace.update(cx, |view, cx| view.activate(1, window, cx));
+        window.render_frame(cx);
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        window.press("w", cx);
+        assert_eq!(copy_active_text(window, cx), "newlocal\n");
+
+        window.press("escape", cx);
+        window.press("u", cx);
+        assert_eq!(copy_active_text(window, cx), "local\n");
+    });
+}
+
+#[gpui_kit::test]
 fn closing_a_modified_tab_can_keep_then_discard_its_edits(cx: &mut TestAppContext) {
     let (workspace, cx) = harness(cx);
     let edited_text = cx.update(|window, cx| {

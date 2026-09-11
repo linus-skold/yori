@@ -7,6 +7,7 @@ mod chrome;
 mod highlighting;
 mod input;
 mod restoration;
+mod vim;
 
 use crate::appearance;
 use yori_document::editing::{EditHistory, EditOutcome, Motion};
@@ -177,6 +178,7 @@ pub(super) struct AlignedEditor {
     alignment: Alignment,
     navigation: ChangeNavigation,
     history: EditHistory,
+    vim: yori::vim::Vim,
     dirty: DirtyState,
     preferred_column: Option<usize>,
     focus: FocusHandle,
@@ -199,6 +201,23 @@ impl AlignedEditor {
 
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        cx.on_blur(&focus, window, |this, _, cx| {
+            this.cancel_vim();
+            cx.notify();
+        })
+        .detach();
+        cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.cancel_vim();
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.observe_global::<vim::VimPreferences>(|this, cx| {
+            this.cancel_vim();
+            cx.notify();
+        })
+        .detach();
 
         Self {
             left,
@@ -206,6 +225,7 @@ impl AlignedEditor {
             alignment,
             navigation: ChangeNavigation::default(),
             history: EditHistory::default(),
+            vim: yori::vim::Vim::default(),
             dirty,
             preferred_column: None,
             focus,
@@ -224,6 +244,7 @@ impl AlignedEditor {
     }
 
     pub(super) fn deactivate(&mut self, cx: &mut Context<Self>) {
+        self.cancel_vim();
         self.finish_composition();
         cx.notify();
     }
@@ -389,11 +410,17 @@ impl AlignedEditor {
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.reposition_vim();
         self.finish_composition();
         self.preferred_column = None;
+
         self.focus.focus(window, cx);
 
         let (side, offset) = self.source_offset_at(event.position, window, cx);
+        if side == Side::Left {
+            self.cancel_vim();
+        }
+
         let anchor = self
             .selection
             .as_ref()
@@ -405,6 +432,7 @@ impl AlignedEditor {
             anchor,
             head: offset,
         });
+        self.sync_vim_selection(cx);
         self.locate_pointer_change(event.position);
 
         cx.notify();
@@ -420,6 +448,7 @@ impl AlignedEditor {
             && selection.side == side
         {
             selection.head = offset;
+            self.sync_vim_selection(cx);
             self.locate_pointer_change(event.position);
 
             cx.notify();
@@ -736,14 +765,46 @@ impl AlignedEditor {
         }
 
         if self.focus.is_focused(window)
-            && let Some(selection) = self.right_selection()
+            && let Some(selection) = &self.selection
         {
-            let (row, x) = self.cursor_position(selection.head, window, cx);
+            let cursor = if Self::vim_enabled(cx) {
+                self.vim.cursor(yori_document::editing::TextSelection {
+                    anchor: selection.anchor,
+                    head: selection.head,
+                })
+            } else {
+                selection.head
+            };
+            let (row, x) = self.cursor_position(cursor, window, cx);
+            let modal_cursor = Self::vim_enabled(cx) && self.vim.mode() != yori::vim::Mode::Insert;
+            let caret_width = if modal_cursor {
+                let next = yori_document::editing::next_grapheme(
+                    self.document(selection.side).document.text(),
+                    cursor,
+                );
+                let (next_row, next_x) = self.cursor_position(next, window, cx);
+                if row == next_row {
+                    (next_x - x).max(8.0)
+                } else {
+                    8.0
+                }
+            } else {
+                1.0
+            };
+            let caret_color = if modal_cursor {
+                cx.theme().foreground.opacity(0.35)
+            } else {
+                cx.theme().foreground
+            };
 
             rows = rows.child(
                 div()
                     .absolute()
-                    .left(px(pane_width + GUTTER_WIDTH))
+                    .left(px(if selection.side == Side::Right {
+                        pane_width + GUTTER_WIDTH
+                    } else {
+                        GUTTER_WIDTH
+                    }))
                     .top(px(0.0))
                     .w(px(text_viewport_width))
                     .h(px(geometry.rows_viewport_height()))
@@ -753,9 +814,9 @@ impl AlignedEditor {
                             .absolute()
                             .left(px(x - self.horizontal_scroll))
                             .top(px(display_units(row) * LINE_HEIGHT - self.vertical_scroll))
-                            .w(px(1.0))
+                            .w(px(caret_width))
                             .h(px(LINE_HEIGHT))
-                            .bg(cx.theme().foreground),
+                            .bg(caret_color),
                     ),
             );
         }
@@ -779,6 +840,7 @@ impl AlignedEditor {
             .line_height(px(LINE_HEIGHT))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .capture_key_down(cx.listener(Self::vim_key))
             .on_action(cx.listener(Self::previous_change))
             .on_action(cx.listener(Self::next_change))
             .on_action(cx.listener(Self::restore_selected_lines))
@@ -843,7 +905,9 @@ impl AlignedEditor {
                 canvas(
                     |_, _, _| (),
                     move |bounds, (), window, cx| {
-                        if input_entity.read(cx).right_selection().is_some() {
+                        if input_entity.read(cx).right_selection().is_some()
+                            && input_entity.read(cx).accepts_text(cx)
+                        {
                             window.handle_input(
                                 &input_focus,
                                 ElementInputHandler::new(bounds, input_entity.clone()),
@@ -872,6 +936,7 @@ impl AlignedEditor {
 }
 
 pub(super) fn init(cx: &mut App) {
+    vim::init(cx);
     input::bind_keys(cx);
 }
 

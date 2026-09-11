@@ -53,6 +53,7 @@ impl AlignedEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_vim();
         self.finish_composition();
         let Some(target) = self.navigation.advance(&self.alignment, direction) else {
             return;

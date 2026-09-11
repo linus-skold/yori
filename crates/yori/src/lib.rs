@@ -3,3 +3,4 @@
 pub mod display;
 pub mod geometry;
 pub mod navigation;
+pub mod vim;

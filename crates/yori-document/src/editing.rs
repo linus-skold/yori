@@ -65,11 +65,18 @@ struct Composition {
     before: TextSelection,
 }
 
+#[derive(Debug)]
+struct Transaction {
+    original: String,
+    before: TextSelection,
+}
+
 #[derive(Debug, Default)]
 pub struct EditHistory {
     undo: Vec<Change>,
     redo: Vec<Change>,
     composition: Option<Composition>,
+    transaction: Option<Transaction>,
 }
 
 impl EditHistory {
@@ -80,9 +87,54 @@ impl EditHistory {
 
     fn record(&mut self, change: Change) {
         if change.removed != change.inserted {
-            self.undo.push(change);
+            if self.transaction.is_none() {
+                self.undo.push(change);
+            }
             self.redo.clear();
         }
+    }
+
+    /// Group an editing command and its subsequent typing into one undo step.
+    /// Only the open transaction retains a snapshot; committed history remains deltas.
+    pub fn begin_transaction(&mut self, document: &Document, selection: TextSelection) {
+        if self.transaction.is_none() {
+            self.finish_composition(document, selection);
+            self.transaction = Some(Transaction {
+                original: document.text().to_owned(),
+                before: selection,
+            });
+        }
+    }
+
+    pub fn finish_transaction(&mut self, document: &Document, selection: TextSelection) {
+        self.finish_composition(document, selection);
+        let Some(transaction) = self.transaction.take() else {
+            return;
+        };
+
+        let old = transaction.original;
+        let new = document.text();
+        let start = old
+            .chars()
+            .zip(new.chars())
+            .take_while(|(left, right)| left == right)
+            .map(|(ch, _)| ch.len_utf8())
+            .sum::<usize>();
+        let suffix = old[start..]
+            .chars()
+            .rev()
+            .zip(new[start..].chars().rev())
+            .take_while(|(left, right)| left == right)
+            .map(|(ch, _)| ch.len_utf8())
+            .sum::<usize>();
+
+        self.record(Change {
+            start,
+            removed: old[start..old.len() - suffix].to_owned(),
+            inserted: new[start..new.len() - suffix].to_owned(),
+            before: transaction.before,
+            after: selection,
+        });
     }
 
     pub fn finish_composition(&mut self, document: &Document, selection: TextSelection) {
@@ -191,7 +243,7 @@ impl EditHistory {
         document: &mut Document,
         selection: TextSelection,
     ) -> Result<Option<EditOutcome>, InputError> {
-        self.finish_composition(document, selection);
+        self.finish_transaction(document, selection);
         let Some(change) = self.undo.last() else {
             return Ok(None);
         };
@@ -214,7 +266,7 @@ impl EditHistory {
         document: &mut Document,
         selection: TextSelection,
     ) -> Result<Option<EditOutcome>, InputError> {
-        self.finish_composition(document, selection);
+        self.finish_transaction(document, selection);
         let Some(change) = self.redo.last() else {
             return Ok(None);
         };

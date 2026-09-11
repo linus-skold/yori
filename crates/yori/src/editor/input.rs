@@ -12,7 +12,7 @@ use super::{
 use yori::geometry::{display_units, whole_rows};
 use yori_document::editing::{self, TextSelection};
 
-struct ViewAnchor {
+pub(super) struct ViewAnchor {
     side: Side,
     offset: usize,
     fraction: f32,
@@ -36,7 +36,7 @@ impl AlignedEditor {
         }
     }
 
-    fn view_anchor(&self) -> ViewAnchor {
+    pub(super) fn view_anchor(&self) -> ViewAnchor {
         let row = whole_rows(self.vertical_scroll / LINE_HEIGHT);
         let side = if self.line_for_row(Side::Left, row).is_some() {
             Side::Left
@@ -59,7 +59,7 @@ impl AlignedEditor {
         }
     }
 
-    fn finish_edit(
+    pub(super) fn finish_edit(
         &mut self,
         anchor: &ViewAnchor,
         edit: &EditOutcome,
@@ -109,6 +109,7 @@ impl AlignedEditor {
             return;
         }
 
+        self.cancel_vim();
         self.finish_composition();
         let selection = self
             .right_selection()
@@ -155,6 +156,7 @@ impl AlignedEditor {
             return;
         }
 
+        self.cancel_vim();
         self.finish_composition();
         let selection = self
             .right_selection()
@@ -190,6 +192,11 @@ impl AlignedEditor {
             return;
         };
 
+        if Self::vim_enabled(cx) && self.vim.mode() == yori::vim::Mode::Insert {
+            self.history
+                .begin_transaction(&self.right.document, selection);
+        }
+
         let anchor = self.view_anchor();
         match self
             .history
@@ -209,8 +216,14 @@ impl AlignedEditor {
         window: &mut Window,
         cx: &App,
     ) -> (usize, f32) {
-        let document = &self.right.document;
-        let row = self.alignment.row_for_offset(document, offset, false);
+        let side = self
+            .selection
+            .as_ref()
+            .map_or(Side::Right, |selection| selection.side);
+        let document = &self.document(side).document;
+        let row = self
+            .alignment
+            .row_for_offset(document, offset, side == Side::Left);
         let range = document.line_content_range(document.line_at_offset(offset));
         let display =
             DisplayLine::from_source(&document.text()[range.clone()], range.start, TAB_WIDTH);
@@ -240,12 +253,20 @@ impl AlignedEditor {
         (row, f32::from(line.x_for_index(display_offset)))
     }
 
-    fn reveal_cursor(&mut self, window: &mut Window, cx: &App) {
-        let Some(selection) = self.right_selection() else {
+    pub(super) fn reveal_cursor(&mut self, window: &mut Window, cx: &App) {
+        let Some(selection) = &self.selection else {
             return;
         };
 
-        let (row, x) = self.cursor_position(selection.head, window, cx);
+        let cursor = if Self::vim_enabled(cx) {
+            self.vim.cursor(TextSelection {
+                anchor: selection.anchor,
+                head: selection.head,
+            })
+        } else {
+            selection.head
+        };
+        let (row, x) = self.cursor_position(cursor, window, cx);
         let geometry = self.geometry();
         let y = display_units(row) * LINE_HEIGHT;
         let height = geometry.rows_viewport_height();
@@ -273,6 +294,10 @@ impl AlignedEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(selection) = self.right_selection() {
+            self.history
+                .finish_transaction(&self.right.document, selection);
+        }
         self.finish_composition();
         let Some(selection) = self.selection.as_ref() else {
             return;
@@ -312,6 +337,7 @@ impl AlignedEditor {
             anchor: 0,
             head: self.document(side).document.text().len(),
         });
+        self.sync_vim_selection(cx);
         self.locate_caret_change();
         self.preferred_column = None;
 
@@ -397,6 +423,7 @@ impl AlignedEditor {
     }
 
     fn travel_history(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_vim();
         let Some(selection) = self.right_selection() else {
             return;
         };
@@ -476,6 +503,9 @@ impl EntityInputHandler for AlignedEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.accepts_text(cx) {
+            return;
+        }
         let Some(selection) = self.right_selection() else {
             return;
         };
@@ -496,6 +526,9 @@ impl EntityInputHandler for AlignedEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.accepts_text(cx) {
+            return;
+        }
         let Some(selection) = self.right_selection() else {
             return;
         };
@@ -507,6 +540,10 @@ impl EntityInputHandler for AlignedEditor {
         let selected = selected.map(|range| {
             editing::from_utf16(text, range.start)..editing::from_utf16(text, range.end)
         });
+        if Self::vim_enabled(cx) && self.vim.mode() == yori::vim::Mode::Insert {
+            self.history
+                .begin_transaction(&self.right.document, selection);
+        }
         let anchor = self.view_anchor();
 
         match self.history.replace_marked(

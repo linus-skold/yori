@@ -5,6 +5,7 @@ use std::path::Path;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable,
     button::{Button, ButtonVariants},
+    switch::Switch,
 };
 use gpui_kit::{Context, FontWeight, IntoElement, ParentElement, Styled, div, px};
 use yori::navigation::ChangeDirection;
@@ -122,12 +123,36 @@ impl AlignedEditor {
                         this.apply_selection_restore(&plan, window, cx);
                     }))
             }))
+            .child(self.render_input_mode(cx))
+    }
+
+    fn render_input_mode(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let enabled = Self::vim_enabled(cx);
+        let label = if enabled {
+            self.vim.mode().label()
+        } else {
+            "Two-way comparison"
+        };
+
+        div()
+            .flex()
+            .items_center()
+            .gap(px(12.0))
+            .flex_shrink_0()
             .child(
                 div()
-                    .flex_shrink_0()
                     .text_size(px(12.0))
                     .text_color(cx.theme().muted_foreground)
-                    .child("Two-way comparison"),
+                    .child(label),
+            )
+            .child(
+                Switch::new("vim-mode")
+                    .label("Vim mode")
+                    .checked(enabled)
+                    .small()
+                    .on_change(cx.listener(|this, enabled, window, cx| {
+                        this.toggle_vim(*enabled, window, cx);
+                    })),
             )
     }
 
