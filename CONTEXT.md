@@ -1,0 +1,46 @@
+# yori
+
+yori compares and reconciles individual source files. Its primary surface
+combines reviewing differences with editing the participating documents.
+
+## Language
+
+**Document**:
+The source contents of one participating file, distinct from their presentation
+in a comparison.
+
+**Two-way comparison**:
+A comparison between two documents, either of which may be read-only or editable
+according to its role.
+_Avoid_: Three-way merge when describing a baseline/local comparison
+
+**Baseline**:
+The reference document against which local changes are reviewed; in the primary
+Perforce workflow, it is the read-only server revision.
+
+**Local document**:
+The editable working-file contents being reviewed against a baseline in the
+primary workflow.
+
+**Diff editor**:
+The unified surface for reviewing differences, directly editing permitted
+documents and transferring changes between them.
+_Avoid_: Separate edit mode when describing a different viewing surface
+
+**Alignment row**:
+A blank display position on one side of a comparison that lines up corresponding
+source content without being a source line itself.
+_Avoid_: Empty source line, padding newline
+
+**Change transfer**:
+An edit that applies a change from one participating document to the other;
+restoring a baseline block into a local document is one example.
+_Avoid_: Three-way merge, conflict resolution
+
+**Three-way merge**:
+Reconciliation of two versions relative to a common base into a result document,
+including resolution of conflicting changes.
+
+**Workspace**:
+The application's collection of open comparison tabs, not a source project or
+directory-comparison scope.
