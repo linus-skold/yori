@@ -67,6 +67,10 @@ impl AlignedEditor {
         cx: &mut Context<Self>,
     ) {
         self.right.refresh_after_edit(edit);
+        if self.dirty.update(self.right.document.text()) {
+            cx.emit(super::DirtyChanged);
+        }
+
         self.alignment = Alignment::between(&self.left.document, &self.right.document);
 
         self.selection = Some(Selection {

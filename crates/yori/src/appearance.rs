@@ -50,6 +50,12 @@ fn apply(theme: &mut Theme) {
     theme.button_secondary_hover = theme.secondary_hover;
     theme.button_secondary_active = theme.secondary_active;
 
+    theme.tab_bar = theme.background;
+    theme.tab = theme.background;
+    theme.tab_foreground = theme.muted_foreground;
+    theme.tab_active = theme.secondary;
+    theme.tab_active_foreground = theme.foreground;
+
     // Keep Component's resolved tokens and Base's mirrored theme in agreement.
     theme.tokens = theme.colors.into();
     theme.font_size = px(13.0);
@@ -122,6 +128,8 @@ mod tests {
             IconName::ArrowDown,
             IconName::ArrowRight,
             IconName::FileText,
+            IconName::Plus,
+            IconName::Close,
         ] {
             let path = icon.path();
             let bytes = Assets.load(path.as_ref()).unwrap().unwrap();

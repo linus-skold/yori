@@ -2,42 +2,37 @@
 
 mod appearance;
 mod editor;
-
-use editor::{AlignedEditor, PaneDocument};
+mod workspace;
 use gpui_kit::component::Root;
 use gpui_kit::{AppContext, WindowOptions};
 use std::{env, path::PathBuf, process};
-use yori_document::Document;
+use workspace::Workspace;
 
 fn usage(program: &str) -> String {
-    format!("usage: {program} <left-file> <right-file>")
+    format!("usage: {program} [<left-file> <right-file>]...")
 }
 
-fn load_arguments() -> Result<(PaneDocument, PaneDocument), String> {
+fn load_arguments() -> Result<Vec<(PathBuf, PathBuf)>, String> {
     let mut args = env::args_os();
     let program = args
         .next()
         .and_then(|value| value.into_string().ok())
         .unwrap_or_else(|| "yori".to_owned());
-    let left = args.next().map(PathBuf::from);
-    let right = args.next().map(PathBuf::from);
-    if left.is_none() || right.is_none() || args.next().is_some() {
+    let paths = args.map(PathBuf::from).collect::<Vec<_>>();
+    if !paths.len().is_multiple_of(2) {
         return Err(usage(&program));
     }
 
-    let left_path = left.unwrap();
-    let right_path = right.unwrap();
-    let left_document = Document::read(&left_path)?;
-    let right_document = Document::read(&right_path)?;
-
-    Ok((
-        PaneDocument::new(left_path, left_document),
-        PaneDocument::new(right_path, right_document),
-    ))
+    Ok(paths
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| (pair[0].clone(), pair[1].clone()))
+        .collect())
 }
 
 fn main() {
-    let (left, right) = load_arguments().unwrap_or_else(|error| {
+    let pairs = load_arguments().unwrap_or_else(|error| {
         eprintln!("yori: {error}");
         process::exit(2);
     });
@@ -48,11 +43,27 @@ fn main() {
             gpui_kit::init(cx);
             appearance::init(cx);
             editor::init(cx);
+            workspace::init(cx);
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
 
             cx.spawn(async move |cx| {
                 cx.open_window(WindowOptions::default(), |window, cx| {
-                    let editor = cx.new(|cx| AlignedEditor::new(left, right, window, cx));
-                    cx.new(|cx| Root::new(editor, window, cx))
+                    let workspace = cx.new(|cx| Workspace::new(window, cx));
+                    let root = cx.new(|cx| Root::new(workspace.clone(), window, cx));
+                    window.defer(cx, move |window, cx| {
+                        workspace.update(cx, |workspace, cx| {
+                            for (left, right) in pairs {
+                                workspace.open_paths(&left, &right, window, cx);
+                            }
+                        });
+                    });
+
+                    root
                 })
                 .expect("failed to open yori window");
             })

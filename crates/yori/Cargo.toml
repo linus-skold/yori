@@ -19,3 +19,6 @@ gpui-kit = { version = "=0.6.1", features = ["tree-sitter-rust"] }
 ropey = "=2.0.0-beta.1"
 unicode-width = "=0.2.2"
 tree-sitter = "=0.26.13"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.6.1", features = ["test-support"] }

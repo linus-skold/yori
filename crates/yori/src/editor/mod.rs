@@ -19,7 +19,8 @@ use gpui_kit::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, Font, HighlightStyle, InteractiveElement, IntoElement, KeyBinding, MouseButton,
     MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled, StyledText, TextRun, UTF16Selection, Window, canvas, div, point, px,
+    SharedString, Styled, StyledText, TestSupportExt, TextRun, UTF16Selection, Window, canvas,
+    container_query, div, point, px,
 };
 use ropey::Rope;
 use yori::{
@@ -148,12 +149,37 @@ impl PaneDocument {
     }
 }
 
+pub(super) struct DirtyChanged;
+
+struct DirtyState {
+    original: String,
+    modified: bool,
+}
+
+impl DirtyState {
+    fn new(text: &str) -> Self {
+        Self {
+            original: text.to_owned(),
+            modified: false,
+        }
+    }
+
+    fn update(&mut self, text: &str) -> bool {
+        let modified = text != self.original;
+        let changed = modified != self.modified;
+        self.modified = modified;
+
+        changed
+    }
+}
+
 pub(super) struct AlignedEditor {
     left: PaneDocument,
     right: PaneDocument,
     alignment: Alignment,
     navigation: ChangeNavigation,
     history: EditHistory,
+    dirty: DirtyState,
     preferred_column: Option<usize>,
     focus: FocusHandle,
     selection: Option<Selection>,
@@ -171,6 +197,7 @@ impl AlignedEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let alignment = Alignment::between(&left.document, &right.document);
+        let dirty = DirtyState::new(right.document.text());
 
         let focus = cx.focus_handle();
         focus.focus(window, cx);
@@ -181,6 +208,7 @@ impl AlignedEditor {
             alignment,
             navigation: ChangeNavigation::default(),
             history: EditHistory::default(),
+            dirty,
             preferred_column: None,
             focus,
             selection: None,
@@ -191,6 +219,15 @@ impl AlignedEditor {
                 window.viewport_size(),
             ))),
         }
+    }
+
+    pub(super) fn is_dirty(&self) -> bool {
+        self.dirty.modified
+    }
+
+    pub(super) fn deactivate(&mut self, cx: &mut Context<Self>) {
+        self.finish_composition();
+        cx.notify();
     }
 
     fn document(&self, side: Side) -> &PaneDocument {
@@ -622,6 +659,8 @@ impl AlignedEditor {
     }
 }
 
+impl gpui_kit::EventEmitter<DirtyChanged> for AlignedEditor {}
+
 impl Focusable for AlignedEditor {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -629,11 +668,33 @@ impl Focusable for AlignedEditor {
 }
 
 impl Render for AlignedEditor {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let editor = cx.entity();
+
+        // Build viewport-dependent content only after this frame's layout has
+        // assigned its size, including when a previously hidden tab is activated.
+        container_query(move |size, window, cx| {
+            editor.update(cx, |editor, cx| {
+                let mut bounds = editor.content_bounds.get();
+                bounds.size = size;
+                editor.content_bounds.set(bounds);
+
+                editor.render_content(window, cx)
+            })
+        })
+    }
+}
+
+impl AlignedEditor {
     #[expect(
         clippy::too_many_lines,
         reason = "one declarative GPUI widget tree keeps input bindings, clipping, and overlays in their rendering order"
     )]
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let geometry = self.geometry();
         let width = geometry.pane_width() * 2.0;
         let pane_width = geometry.pane_width();
@@ -654,6 +715,7 @@ impl Render for AlignedEditor {
 
         let mut rows = div()
             .id("rows-viewport")
+            .test_support()
             .absolute()
             .top(px(HEADER_HEIGHT))
             .left(px(0.0))
@@ -748,6 +810,7 @@ impl Render for AlignedEditor {
 
         div()
             .id("aligned-editor")
+            .test_support()
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .size_full()
@@ -813,10 +876,9 @@ impl Render for AlignedEditor {
                 this.move_cursor(Motion::Finish, false, w, cx);
             }))
             .on_scroll_wheel(cx.listener(Self::scroll))
-            .on_prepaint(move |bounds, window, _| {
-                if measured_content_bounds.replace(bounds) != bounds {
-                    window.refresh();
-                }
+            .on_prepaint(move |bounds, _, _| {
+                // Input uses the same frame's window-local origin and size.
+                measured_content_bounds.set(bounds);
             })
             .child(
                 canvas(
@@ -865,6 +927,32 @@ mod tests {
             PathBuf::from("fixture.rs"),
             Document::from_bytes(text.as_bytes().to_vec()).unwrap(),
         )
+    }
+
+    #[test]
+    fn dirty_state_tracks_loaded_local_bytes_not_the_comparison_baseline() {
+        let mut document = Document::from_bytes(b"local\r\n".to_vec()).unwrap();
+        let mut dirty = DirtyState::new(document.text());
+        let mut history = EditHistory::default();
+        assert!(!dirty.modified);
+
+        let edit = history
+            .replace(&mut document, TextSelection::caret(0), 0..5, "baseline")
+            .unwrap();
+        assert!(dirty.update(document.text()));
+        assert!(dirty.modified);
+        assert!(!dirty.update(document.text()));
+
+        let undo = history
+            .undo(&mut document, edit.selection)
+            .unwrap()
+            .unwrap();
+        assert!(dirty.update(document.text()));
+        assert!(!dirty.modified);
+
+        history.redo(&mut document, undo.selection).unwrap();
+        assert!(dirty.update(document.text()));
+        assert!(dirty.modified);
     }
 
     #[test]
