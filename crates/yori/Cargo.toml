@@ -1,0 +1,21 @@
+[package]
+name = "yori"
+description = "Native source-file diff editor"
+publish = false
+version.workspace = true
+edition.workspace = true
+# Highest declared MSRV in the selected Linux GPUI dependency graph (oo7 0.6.0).
+rust-version = "1.92"
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yori-document = { path = "../yori-document" }
+yori-diff = { path = "../yori-diff" }
+gpui-kit = { version = "=0.6.1", features = ["tree-sitter-rust"] }
+ropey = "=2.0.0-beta.1"
+unicode-width = "=0.2.2"
+tree-sitter = "=0.26.13"

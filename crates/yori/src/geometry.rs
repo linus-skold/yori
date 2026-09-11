@@ -1,0 +1,132 @@
+//! Window-local editor geometry shared by painting and input.
+
+/// Convert an integer display extent to GPUI's floating-point pixel arithmetic.
+/// Source byte positions never pass through this conversion.
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "GPUI uses f32 pixels; subpixel precision beyond 16 million display units is not meaningful"
+)]
+pub fn display_units(units: usize) -> f32 {
+    units as f32
+}
+
+/// Resolve a nonnegative display-row count; Rust saturates out-of-range casts.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "flooring and clamping is the intended pixel-to-row conversion; this never converts source byte offsets"
+)]
+pub fn whole_rows(rows: f32) -> usize {
+    rows.max(0.0).floor() as usize
+}
+
+#[must_use]
+pub fn horizontal_scroll_limit(
+    max_display_columns: usize,
+    monospace_cell_width: f32,
+    text_viewport_width: f32,
+) -> f32 {
+    (display_units(max_display_columns) * monospace_cell_width - text_viewport_width.max(0.0))
+        .max(0.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorGeometry {
+    origin_x: f32,
+    origin_y: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    header_height: f32,
+    gutter_width: f32,
+    line_height: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocalHit {
+    pub left_side: bool,
+    pub row: usize,
+    pub in_gutter: bool,
+    pub text_x: f32,
+}
+
+impl EditorGeometry {
+    #[must_use]
+    pub fn new(
+        origin_x: f32,
+        origin_y: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+        header_height: f32,
+        gutter_width: f32,
+        line_height: f32,
+    ) -> Self {
+        Self {
+            origin_x,
+            origin_y,
+            viewport_width: viewport_width.max(0.0),
+            viewport_height: viewport_height.max(0.0),
+            header_height: header_height.max(0.0),
+            gutter_width: gutter_width.max(0.0),
+            line_height: line_height.max(f32::EPSILON),
+        }
+    }
+
+    #[must_use]
+    pub fn pane_width(self) -> f32 {
+        self.viewport_width / 2.0
+    }
+
+    #[must_use]
+    pub fn rows_viewport_height(self) -> f32 {
+        (self.viewport_height - self.header_height).max(0.0)
+    }
+
+    #[must_use]
+    pub fn text_viewport_width(self) -> f32 {
+        (self.pane_width() - self.gutter_width).max(0.0)
+    }
+
+    #[must_use]
+    pub fn hit(
+        self,
+        window_x: f32,
+        window_y: f32,
+        vertical_scroll: f32,
+        horizontal_scroll: f32,
+    ) -> LocalHit {
+        let local_x = window_x - self.origin_x;
+        let local_y = window_y - self.origin_y;
+        let left_side = local_x < self.pane_width();
+        let pane_x = if left_side {
+            local_x
+        } else {
+            local_x - self.pane_width()
+        };
+        let row_y = (local_y - self.header_height + vertical_scroll).max(0.0);
+        let in_gutter = pane_x < self.gutter_width;
+        LocalHit {
+            left_side,
+            row: whole_rows(row_y / self.line_height),
+            in_gutter,
+            text_x: if in_gutter {
+                0.0
+            } else {
+                pane_x - self.gutter_width + horizontal_scroll
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn vertical_scroll_limit(self, alignment_rows: usize) -> f32 {
+        (display_units(alignment_rows) * self.line_height + self.line_height
+            - self.rows_viewport_height())
+        .max(0.0)
+    }
+
+    #[must_use]
+    pub fn visible_row_top(self, row: usize, first_row: usize, row_offset: f32) -> f32 {
+        display_units(row - first_row) * self.line_height - row_offset
+    }
+}

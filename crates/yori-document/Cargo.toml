@@ -11,3 +11,4 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+unicode-segmentation = "=1.13.3"
