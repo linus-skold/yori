@@ -8695,12 +8695,15 @@ dependencies = [
 name = "yori"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gpui-kit",
  "ropey",
+ "tempfile",
  "tree-sitter",
  "unicode-width",
  "yori-diff",
  "yori-document",
+ "zbus",
 ]
 
 [[package]]

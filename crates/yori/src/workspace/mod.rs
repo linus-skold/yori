@@ -82,6 +82,42 @@ impl Workspace {
         }
     }
 
+    /// Process one CLI handoff on the UI thread. Completion means every pair was
+    /// loaded or rejected, not just queued; temporary files can then be released.
+    pub(super) fn open_comparisons(
+        &mut self,
+        pairs: &[(std::path::PathBuf, std::path::PathBuf)],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        window.activate_window();
+        if pairs.is_empty() {
+            if !self.picking_files && !window.has_active_dialog(cx) {
+                self.focus_active(window, cx);
+            }
+            return Ok(());
+        }
+        if self.picking_files || window.has_active_dialog(cx) {
+            return Err("yori has a dialog open; finish or cancel it, then retry".into());
+        }
+
+        let mut errors = Vec::new();
+        for (left, right) in pairs {
+            let result =
+                FilePair::resolve(left, right).and_then(|pair| self.open_pair(pair, window, cx));
+            if let Err(error) = result {
+                window.push_notification(Notification::error(error.clone()), cx);
+                errors.push(error);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
+    }
+
     fn open_pair(
         &mut self,
         pair: FilePair,

@@ -38,6 +38,38 @@ fn harness(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContex
 }
 
 #[gpui_kit::test]
+fn startup_and_handoff_dispatch_can_read_modal_state_and_report_file_errors(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, cx) = harness(cx);
+    let window = cx.update(|window, _| window.window_handle().downcast::<Root>().unwrap());
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+
+    crate::dispatch_open(window, &workspace, &[], &mut cx.cx).unwrap();
+    crate::dispatch_open(
+        window,
+        &workspace,
+        &[(
+            fixtures.join("intraline-before.rs"),
+            fixtures.join("intraline-after.rs"),
+        )],
+        &mut cx.cx,
+    )
+    .unwrap();
+    cx.update(|_, cx| assert_eq!(workspace.read(cx).tabs.entries.len(), 2));
+
+    let error = crate::dispatch_open(
+        window,
+        &workspace,
+        &[(fixtures.join("missing.rs"), fixtures.join("after.rs"))],
+        &mut cx.cx,
+    )
+    .unwrap_err();
+    assert!(error.contains("missing.rs"));
+    cx.update(|_, cx| assert_eq!(workspace.read(cx).tabs.entries.len(), 2));
+}
+
+#[gpui_kit::test]
 fn switching_tabs_uses_current_geometry_on_the_first_frame(cx: &mut TestAppContext) {
     let (workspace, cx) = harness(cx);
     cx.update(|window, cx| {
@@ -160,6 +192,108 @@ fn closing_a_modified_tab_can_keep_then_discard_its_edits(cx: &mut TestAppContex
     cx.update(|window, cx| {
         assert!(!window.has_active_dialog(cx));
         assert!(workspace.read(cx).tabs.entries.is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn forwarded_pairs_preserve_existing_edits_and_load_new_files_before_returning(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, cx) = harness(cx);
+    let edited_text = cx.update(|window, cx| {
+        let width = window.find("rows-viewport").bounds().size.width;
+        window.click_at("rows-viewport", point(width * 0.75, px(11.0)), cx);
+        window.input("changed", cx);
+        copy_active_text(window, cx)
+    });
+    let temporary = tempfile::tempdir().unwrap();
+    let left = temporary.path().join("baseline.rs");
+    let right = temporary.path().join("local.rs");
+    std::fs::write(&left, "baseline\n").unwrap();
+    std::fs::write(&right, "local\n").unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+
+    cx.update(|window, cx| {
+        workspace.update(cx, |view, cx| {
+            view.open_comparisons(&[(left.clone(), right.clone())], window, cx)
+                .unwrap();
+        });
+        assert_eq!(workspace.read(cx).tabs.entries.len(), 2);
+        assert_eq!(workspace.read(cx).tabs.active, Some(1));
+    });
+    // Match Perforce removing temporary inputs immediately after acknowledgment.
+    std::fs::remove_file(left).unwrap();
+    std::fs::remove_file(right).unwrap();
+
+    cx.update(|window, cx| {
+        let width = window.find("rows-viewport").bounds().size.width;
+        window.click_at("rows-viewport", point(width * 0.75, px(11.0)), cx);
+        assert_eq!(copy_active_text(window, cx), "local\n");
+
+        workspace.update(cx, |view, cx| {
+            view.open_comparisons(
+                &[(fixtures.join("before.rs"), fixtures.join("after.rs"))],
+                window,
+                cx,
+            )
+            .unwrap();
+        });
+        assert_eq!(workspace.read(cx).tabs.entries.len(), 2);
+        assert_eq!(workspace.read(cx).tabs.active, Some(0));
+        assert_eq!(copy_active_text(window, cx), edited_text);
+        assert!(workspace.read(cx).has_modified_tabs(cx));
+
+        let undo = if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        };
+        // Input simulation types one character per history entry.
+        for _ in "changed".chars() {
+            window.press(undo, cx);
+        }
+        assert!(
+            !workspace.read(cx).has_modified_tabs(cx),
+            "reopening an existing pair must preserve its undo history"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn forwarded_requests_report_errors_and_do_not_interrupt_a_discard_dialog(cx: &mut TestAppContext) {
+    let (workspace, cx) = harness(cx);
+    let missing = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/does-not-exist.rs");
+    cx.update(|window, cx| {
+        let error = workspace
+            .update(cx, |view, cx| {
+                view.open_comparisons(&[(missing.clone(), missing.clone())], window, cx)
+            })
+            .unwrap_err();
+        assert!(error.contains("does-not-exist.rs"));
+        assert_eq!(workspace.read(cx).tabs.entries.len(), 1);
+
+        let width = window.find("rows-viewport").bounds().size.width;
+        window.click_at("rows-viewport", point(width * 0.75, px(11.0)), cx);
+        window.input("changed", cx);
+        window.click(("tab-close-target", 0usize), cx);
+        assert!(window.has_active_dialog(cx));
+
+        let error = workspace
+            .update(cx, |view, cx| {
+                view.open_comparisons(&[(missing.clone(), missing.clone())], window, cx)
+            })
+            .unwrap_err();
+        assert!(error.contains("dialog open"));
+        workspace
+            .update(cx, |view, cx| view.open_comparisons(&[], window, cx))
+            .unwrap();
+        assert!(window.has_active_dialog(cx));
+
+        // Focusing the existing window must not divert Enter/Escape from its modal.
+        window.press("escape", cx);
+        assert!(!window.has_active_dialog(cx));
+        assert_eq!(workspace.read(cx).tabs.entries.len(), 1);
+        assert!(workspace.read(cx).has_modified_tabs(cx));
     });
 }
 

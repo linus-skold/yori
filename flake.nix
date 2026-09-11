@@ -14,6 +14,7 @@
           default = pkgs.mkShell {
             nativeBuildInputs = with pkgs; [
               pkg-config
+              dbus # isolated session buses for IPC tests
             ];
             buildInputs = with pkgs; [
               fontconfig
