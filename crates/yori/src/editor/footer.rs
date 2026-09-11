@@ -38,7 +38,7 @@ impl AlignedEditor {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(self.render_pane_status(Side::Left, pane_width, cx))
-            .child(self.render_pane_status(Side::Right, pane_width, cx))
+            .child(self.render_pane_status(Side::Right, pane_width + super::scrollbar::WIDTH, cx))
     }
 
     fn render_pane_status(

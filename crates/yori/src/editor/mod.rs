@@ -8,6 +8,7 @@ mod footer;
 mod highlighting;
 mod input;
 mod restoration;
+mod scrollbar;
 mod vim;
 mod whitespace;
 
@@ -210,6 +211,7 @@ pub(super) struct AlignedEditor {
     vertical_scroll: f32,
     horizontal_scroll: f32,
     show_whitespace: bool,
+    scrollbar_grab: Option<f32>,
     // Mouse events are window-local; measured bounds provide the editor's content-local inset.
     content_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
@@ -233,6 +235,7 @@ impl AlignedEditor {
         .detach();
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
+                this.scrollbar_grab = None;
                 this.cancel_vim();
                 cx.notify();
             }
@@ -258,6 +261,7 @@ impl AlignedEditor {
             vertical_scroll: 0.0,
             horizontal_scroll: 0.0,
             show_whitespace: false,
+            scrollbar_grab: None,
             content_bounds: Rc::new(Cell::new(Bounds::new(
                 point(px(0.0), px(0.0)),
                 window.viewport_size(),
@@ -270,6 +274,7 @@ impl AlignedEditor {
     }
 
     pub(super) fn deactivate(&mut self, cx: &mut Context<Self>) {
+        self.scrollbar_grab = None;
         self.cancel_vim();
         self.finish_composition();
         cx.notify();
@@ -294,7 +299,7 @@ impl AlignedEditor {
         EditorGeometry::new(
             f32::from(bounds.origin.x),
             f32::from(bounds.origin.y),
-            f32::from(bounds.size.width),
+            (f32::from(bounds.size.width) - scrollbar::WIDTH).max(0.0),
             (f32::from(bounds.size.height) - FOOTER_HEIGHT).max(0.0),
             HEADER_HEIGHT,
             GUTTER_WIDTH,
@@ -960,6 +965,7 @@ impl AlignedEditor {
                 .size_full(),
             )
             .child(rows)
+            .child(self.render_scrollbar(cx))
             .child(self.render_footer(pane_width, cx))
             .child(self.render_pane_header(Side::Left, pane_width, cx))
             .child(self.render_pane_header(Side::Right, pane_width, cx))

@@ -4,4 +4,5 @@ pub mod display;
 pub mod document_info;
 pub mod geometry;
 pub mod navigation;
+pub mod scrollbar;
 pub mod vim;

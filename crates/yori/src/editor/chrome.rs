@@ -124,7 +124,11 @@ impl AlignedEditor {
             .absolute()
             .top(px(0.0))
             .left(px(if side == Side::Left { 0.0 } else { pane_width }))
-            .w(px(pane_width))
+            .w(px(if side == Side::Right {
+                pane_width + super::scrollbar::WIDTH
+            } else {
+                pane_width
+            }))
             .h(px(HEADER_HEIGHT))
             .px(px(16.0))
             .flex()

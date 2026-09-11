@@ -97,11 +97,14 @@ fn switching_tabs_uses_current_geometry_on_the_first_frame(cx: &mut TestAppConte
         let editor = window.find("aligned-editor").bounds();
         let rows = window.find("rows-viewport").bounds();
         let footer = window.find("editor-footer").bounds();
+        let scrollbar = window.find("diff-scrollbar").bounds();
 
         assert_eq!(
-            rows.size.width, editor.size.width,
+            rows.right(),
+            scrollbar.left(),
             "pane widths must be correct immediately after activation"
         );
+        assert_eq!(scrollbar.right(), editor.right());
         assert_eq!(
             rows.bottom(),
             footer.top(),
