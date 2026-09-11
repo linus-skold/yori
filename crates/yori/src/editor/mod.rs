@@ -4,6 +4,7 @@ use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc};
 
 mod change_navigation;
 mod chrome;
+mod footer;
 mod highlighting;
 mod input;
 mod restoration;
@@ -23,6 +24,7 @@ use gpui_kit::{
 use ropey::Rope;
 use yori::{
     display::{DisplayLine, max_display_columns, source_offset_at},
+    document_info::{Language, LineEndings},
     geometry::{EditorGeometry, display_units, horizontal_scroll_limit, whole_rows},
     navigation::ChangeNavigation,
 };
@@ -30,6 +32,7 @@ use yori_diff::{Alignment, DiffKind, IntralineDiff};
 use yori_document::Document;
 
 const TOOLBAR_HEIGHT: f32 = 40.0;
+const FOOTER_HEIGHT: f32 = 32.0;
 const FILE_HEADER_HEIGHT: f32 = 64.0;
 const HEADER_HEIGHT: f32 = TOOLBAR_HEIGHT + FILE_HEADER_HEIGHT;
 const LINE_HEIGHT: f32 = 22.0;
@@ -98,30 +101,52 @@ pub(super) struct PaneDocument {
     max_display_columns: usize,
     document: Document,
     highlighter: Option<SyntaxHighlighter>,
+    language_override: Option<Language>,
+    line_endings: LineEndings,
 }
 
 impl PaneDocument {
     pub(super) fn new(path: PathBuf, document: Document) -> Self {
         let max_display_columns = max_display_columns(&document, TAB_WIDTH);
-        let highlighter = path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
-            .then(|| {
-                let mut highlighter = SyntaxHighlighter::new("rust");
-                highlighter.update(None, &Rope::from(document.text()), None);
-                highlighter
-            });
+        let highlighter = Self::highlighter_for(Language::detect(&path), &document);
+        let line_endings = LineEndings::from_document(&document);
 
         Self {
             path,
             max_display_columns,
             document,
             highlighter,
+            language_override: None,
+            line_endings,
         }
+    }
+
+    fn language(&self) -> Language {
+        self.language_override
+            .unwrap_or_else(|| Language::detect(&self.path))
+    }
+
+    fn highlighter_for(language: Language, document: &Document) -> Option<SyntaxHighlighter> {
+        let grammar = language.grammar()?;
+        let mut highlighter = SyntaxHighlighter::new(grammar);
+        highlighter.update(None, &Rope::from(document.text()), None);
+
+        Some(highlighter)
+    }
+
+    fn set_language(&mut self, language: Option<Language>) {
+        let previous = self.language();
+        self.language_override = language;
+        if self.language() == previous {
+            return;
+        }
+
+        self.highlighter = Self::highlighter_for(self.language(), &self.document);
     }
 
     fn refresh_after_edit(&mut self, edit: &EditOutcome) {
         self.max_display_columns = max_display_columns(&self.document, TAB_WIDTH);
+        self.line_endings = LineEndings::from_document(&self.document);
 
         if let Some(highlighter) = &mut self.highlighter {
             let next = Rope::from(self.document.text());
@@ -269,7 +294,7 @@ impl AlignedEditor {
             f32::from(bounds.origin.x),
             f32::from(bounds.origin.y),
             f32::from(bounds.size.width),
-            f32::from(bounds.size.height),
+            (f32::from(bounds.size.height) - FOOTER_HEIGHT).max(0.0),
             HEADER_HEIGHT,
             GUTTER_WIDTH,
             LINE_HEIGHT,
@@ -921,6 +946,7 @@ impl AlignedEditor {
             )
             .child(rows)
             .child(self.render_toolbar(cx))
+            .child(self.render_footer(pane_width, cx))
             .child(self.render_pane_header(Side::Left, pane_width, cx))
             .child(self.render_pane_header(Side::Right, pane_width, cx))
             .child(
