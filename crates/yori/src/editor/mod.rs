@@ -3,13 +3,15 @@
 use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc};
 
 mod change_navigation;
+mod chrome;
 mod highlighting;
 mod input;
 
+use crate::appearance;
 use yori_document::editing::{EditHistory, EditOutcome, Motion};
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable, ElementExt, Sizable,
+    ActiveTheme, ElementExt, IconName, Sizable,
     button::{Button, ButtonVariants},
     highlighter::SyntaxHighlighter,
 };
@@ -17,24 +19,25 @@ use gpui_kit::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, Font, HighlightStyle, InteractiveElement, IntoElement, KeyBinding, MouseButton,
     MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled, StyledText, TextRun, UTF16Selection, Window, canvas, div, hsla, point,
-    px,
+    SharedString, Styled, StyledText, TextRun, UTF16Selection, Window, canvas, div, point, px,
 };
 use ropey::Rope;
 use yori::{
     display::{DisplayLine, max_display_columns, source_offset_at},
     geometry::{EditorGeometry, display_units, horizontal_scroll_limit, whole_rows},
-    navigation::{ChangeDirection, ChangeNavigation},
+    navigation::ChangeNavigation,
 };
 use yori_diff::{Alignment, DiffKind, IntralineDiff};
 use yori_document::Document;
 
-const TOOLBAR_HEIGHT: f32 = 38.0;
-const FILE_HEADER_HEIGHT: f32 = 42.0;
+const TOOLBAR_HEIGHT: f32 = 40.0;
+const FILE_HEADER_HEIGHT: f32 = 64.0;
 const HEADER_HEIGHT: f32 = TOOLBAR_HEIGHT + FILE_HEADER_HEIGHT;
-const LINE_HEIGHT: f32 = 20.0;
-const RESTORE_WIDTH: f32 = 24.0;
-const GUTTER_WIDTH: f32 = 58.0 + RESTORE_WIDTH;
+const LINE_HEIGHT: f32 = 22.0;
+const RESTORE_WIDTH: f32 = 26.0;
+const TEXT_INSET: f32 = 8.0;
+// Include the fixed inset in the gutter so shaping, caret and hit testing share one text origin.
+const GUTTER_WIDTH: f32 = 64.0 + RESTORE_WIDTH + TEXT_INSET;
 const TAB_WIDTH: usize = 4;
 const OVERSCAN_ROWS: usize = 4;
 const KEY_CONTEXT: &str = "AlignedEditor";
@@ -495,8 +498,8 @@ impl AlignedEditor {
             marked.as_ref(),
             &highlighting::OverlayColors {
                 changed: match side {
-                    Side::Left => hsla(0.02, 0.62, 0.34, 0.8),
-                    Side::Right => hsla(0.34, 0.48, 0.30, 0.8),
+                    Side::Left => appearance::removed().emphasis,
+                    Side::Right => appearance::added().emphasis,
                 },
                 selected: cx.theme().selection,
                 foreground: cx.theme().foreground,
@@ -504,14 +507,11 @@ impl AlignedEditor {
         )
     }
 
-    fn row_background(kind: DiffKind, side: Side) -> gpui_kit::Hsla {
+    fn row_colors(kind: DiffKind, side: Side) -> Option<appearance::DiffColors> {
         match (kind, side) {
-            (DiffKind::Equal, _) => hsla(0.0, 0.0, 0.0, 0.0),
-            (DiffKind::Removed, Side::Left) => hsla(0.0, 0.62, 0.22, 0.72),
-            (DiffKind::Added, Side::Right) => hsla(0.34, 0.48, 0.18, 0.72),
-            (DiffKind::Modified, Side::Left) => hsla(0.07, 0.58, 0.22, 0.72),
-            (DiffKind::Modified, Side::Right) => hsla(0.14, 0.48, 0.20, 0.72),
-            _ => hsla(0.0, 0.0, 0.08, 0.42),
+            (DiffKind::Removed | DiffKind::Modified, Side::Left) => Some(appearance::removed()),
+            (DiffKind::Added | DiffKind::Modified, Side::Right) => Some(appearance::added()),
+            _ => None,
         }
     }
 
@@ -533,7 +533,14 @@ impl AlignedEditor {
             Side::Left => row.left,
             Side::Right => row.right,
         };
-        let background = Self::row_background(row.kind, side);
+        let colors = Self::row_colors(row.kind, side);
+        let background = if line.is_none() {
+            appearance::gap()
+        } else {
+            colors
+                .as_ref()
+                .map_or(cx.theme().background, |colors| colors.line)
+        };
 
         let mut container = div()
             .absolute()
@@ -560,12 +567,16 @@ impl AlignedEditor {
                     div()
                         .absolute()
                         .left(px(RESTORE_WIDTH))
-                        .w(px(GUTTER_WIDTH - RESTORE_WIDTH))
+                        .w(px(GUTTER_WIDTH - RESTORE_WIDTH - TEXT_INSET))
                         .h(px(LINE_HEIGHT))
                         .overflow_hidden()
                         .text_right()
                         .pr(px(8.0))
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(
+                            colors
+                                .as_ref()
+                                .map_or(cx.theme().muted_foreground, |colors| colors.marker),
+                        )
                         .child((line_index + 1).to_string()),
                 )
                 .child(
@@ -585,82 +596,29 @@ impl AlignedEditor {
                 );
         }
 
-        if self
+        let current = self
             .navigation
             .current(&self.alignment)
-            .is_some_and(|index| self.alignment.blocks()[index].rows.contains(&row_index))
-        {
+            .is_some_and(|index| self.alignment.blocks()[index].rows.contains(&row_index));
+        let marker = if current {
+            Some(cx.theme().primary)
+        } else {
+            colors.map(|colors| colors.marker)
+        };
+
+        if let Some(marker) = marker {
             container = container.child(
                 div()
                     .absolute()
-                    .left(px(GUTTER_WIDTH - 3.0))
+                    .left(px(GUTTER_WIDTH - TEXT_INSET - 3.0))
                     .top(px(0.0))
-                    .w(px(3.0))
+                    .w(px(if current { 3.0 } else { 2.0 }))
                     .h(px(LINE_HEIGHT))
-                    .bg(cx.theme().primary),
+                    .bg(marker),
             );
         }
 
         container
-    }
-
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.alignment.blocks().len();
-        let label = if let Some(index) = self.navigation.current(&self.alignment) {
-            format!("Change {} of {count}", index + 1)
-        } else if count == 0 {
-            "No changes".to_owned()
-        } else if count == 1 {
-            "1 change".to_owned()
-        } else {
-            format!("{count} changes")
-        };
-
-        div()
-            .absolute()
-            .top(px(0.0))
-            .left(px(0.0))
-            .w_full()
-            .h(px(TOOLBAR_HEIGHT))
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .overflow_hidden()
-            .bg(cx.theme().secondary)
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Button::new("previous-change")
-                    .label("↑ Previous")
-                    .ghost()
-                    .with_size(px(26.0))
-                    .tooltip("Previous change (Alt+Up)")
-                    .disabled(
-                        self.navigation
-                            .target(&self.alignment, ChangeDirection::Previous)
-                            .is_none(),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.previous_change(&PreviousChange, window, cx);
-                    })),
-            )
-            .child(
-                Button::new("next-change")
-                    .label("↓ Next")
-                    .ghost()
-                    .with_size(px(26.0))
-                    .tooltip("Next change (Alt+Down)")
-                    .disabled(
-                        self.navigation
-                            .target(&self.alignment, ChangeDirection::Next)
-                            .is_none(),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.next_change(&NextChange, window, cx);
-                    })),
-            )
-            .child(div().text_color(cx.theme().muted_foreground).child(label))
     }
 }
 
@@ -769,7 +727,8 @@ impl Render for AlignedEditor {
                     .on_mouse_move(|_, _, cx| cx.stop_propagation())
                     .child(
                         Button::new(("restore-block", index))
-                            .label("→")
+                            .icon(IconName::ArrowRight)
+                            .accessibility_label("Restore block from baseline")
                             .ghost()
                             .compact()
                             .with_size(px(LINE_HEIGHT))
@@ -877,50 +836,16 @@ impl Render for AlignedEditor {
             )
             .child(rows)
             .child(self.render_toolbar(cx))
+            .child(self.render_pane_header(Side::Left, pane_width, cx))
+            .child(self.render_pane_header(Side::Right, pane_width, cx))
             .child(
                 div()
                     .absolute()
-                    .top(px(HEADER_HEIGHT))
+                    .top(px(TOOLBAR_HEIGHT))
                     .left(px(pane_width))
                     .w(px(1.0))
-                    .h(px(geometry.rows_viewport_height()))
+                    .h(px(FILE_HEADER_HEIGHT + geometry.rows_viewport_height()))
                     .bg(cx.theme().border),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(TOOLBAR_HEIGHT))
-                    .left(px(0.0))
-                    .w(px(pane_width))
-                    .h(px(FILE_HEADER_HEIGHT))
-                    .px(px(12.0))
-                    .flex()
-                    .items_center()
-                    .overflow_hidden()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
-                    .child(format!("{} — read-only", self.left.path.display())),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(TOOLBAR_HEIGHT))
-                    .left(px(pane_width))
-                    .w(px(pane_width))
-                    .h(px(FILE_HEADER_HEIGHT))
-                    .px(px(12.0))
-                    .flex()
-                    .items_center()
-                    .overflow_hidden()
-                    .border_b_1()
-                    .border_l_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
-                    .child(format!(
-                        "{} — editable · memory only",
-                        self.right.path.display()
-                    )),
             )
     }
 }

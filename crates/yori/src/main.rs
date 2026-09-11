@@ -1,12 +1,10 @@
 //! yori process startup and native application composition.
 
+mod appearance;
 mod editor;
 
 use editor::{AlignedEditor, PaneDocument};
-use gpui_kit::component::{
-    Root,
-    theme::{Theme, ThemeMode},
-};
+use gpui_kit::component::Root;
 use gpui_kit::{AppContext, WindowOptions};
 use std::{env, path::PathBuf, process};
 use yori_document::Document;
@@ -44,18 +42,20 @@ fn main() {
         process::exit(2);
     });
 
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
-        editor::init(cx);
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            appearance::init(cx);
+            editor::init(cx);
 
-        cx.spawn(async move |cx| {
-            cx.open_window(WindowOptions::default(), |window, cx| {
-                let editor = cx.new(|cx| AlignedEditor::new(left, right, window, cx));
-                cx.new(|cx| Root::new(editor, window, cx))
+            cx.spawn(async move |cx| {
+                cx.open_window(WindowOptions::default(), |window, cx| {
+                    let editor = cx.new(|cx| AlignedEditor::new(left, right, window, cx));
+                    cx.new(|cx| Root::new(editor, window, cx))
+                })
+                .expect("failed to open yori window");
             })
-            .expect("failed to open yori window");
-        })
-        .detach();
-    });
+            .detach();
+        });
 }
