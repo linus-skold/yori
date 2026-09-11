@@ -123,7 +123,11 @@ impl AlignedEditor {
         div()
             .absolute()
             .top(px(0.0))
-            .left(px(if side == Side::Left { 0.0 } else { pane_width }))
+            .left(px(if side == Side::Left {
+                0.0
+            } else {
+                self.geometry().right_pane_left()
+            }))
             .w(px(if side == Side::Right {
                 pane_width + super::scrollbar::WIDTH
             } else {

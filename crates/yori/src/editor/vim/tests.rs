@@ -71,6 +71,7 @@ fn toggle_vim_from_options(window: &mut Window, cx: &mut App) {
 
     window.press("down", cx);
     window.press("down", cx);
+    window.press("down", cx);
     window.press("enter", cx);
 }
 

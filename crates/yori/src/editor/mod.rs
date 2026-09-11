@@ -4,6 +4,7 @@ use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc};
 
 mod change_navigation;
 mod chrome;
+mod connections;
 mod footer;
 mod highlighting;
 mod input;
@@ -211,6 +212,8 @@ pub(super) struct AlignedEditor {
     vertical_scroll: f32,
     horizontal_scroll: f32,
     show_whitespace: bool,
+    show_connections: bool,
+    hovered_connection: Option<Range<usize>>,
     scrollbar_grab: Option<f32>,
     // Mouse events are window-local; measured bounds provide the editor's content-local inset.
     content_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -236,6 +239,7 @@ impl AlignedEditor {
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
                 this.scrollbar_grab = None;
+                this.hovered_connection = None;
                 this.cancel_vim();
                 cx.notify();
             }
@@ -261,6 +265,8 @@ impl AlignedEditor {
             vertical_scroll: 0.0,
             horizontal_scroll: 0.0,
             show_whitespace: false,
+            show_connections: false,
+            hovered_connection: None,
             scrollbar_grab: None,
             content_bounds: Rc::new(Cell::new(Bounds::new(
                 point(px(0.0), px(0.0)),
@@ -275,6 +281,7 @@ impl AlignedEditor {
 
     pub(super) fn deactivate(&mut self, cx: &mut Context<Self>) {
         self.scrollbar_grab = None;
+        self.hovered_connection = None;
         self.cancel_vim();
         self.finish_composition();
         cx.notify();
@@ -305,6 +312,11 @@ impl AlignedEditor {
             GUTTER_WIDTH,
             LINE_HEIGHT,
         )
+        .with_center_width(if self.show_connections {
+            connections::WIDTH
+        } else {
+            0.0
+        })
     }
 
     fn source_offset_at(
@@ -615,6 +627,19 @@ impl AlignedEditor {
         }
     }
 
+    fn render_line_number(line_index: usize, color: gpui_kit::Hsla) -> impl IntoElement {
+        div()
+            .absolute()
+            .left(px(RESTORE_WIDTH))
+            .w(px(GUTTER_WIDTH - RESTORE_WIDTH - TEXT_INSET))
+            .h(px(LINE_HEIGHT))
+            .overflow_hidden()
+            .text_right()
+            .pr(px(8.0))
+            .text_color(color)
+            .child((line_index + 1).to_string())
+    }
+
     fn render_pane_row(
         &self,
         side: Side,
@@ -645,7 +670,11 @@ impl AlignedEditor {
         let mut container = div()
             .absolute()
             .top(px(top))
-            .left(px(if side == Side::Left { 0.0 } else { pane_width }))
+            .left(px(if side == Side::Left {
+                0.0
+            } else {
+                geometry.right_pane_left()
+            }))
             .w(px(pane_width))
             .h(px(LINE_HEIGHT))
             .overflow_hidden()
@@ -671,22 +700,12 @@ impl AlignedEditor {
                 StyledText::new(SharedString::from(display.text)).with_highlights(highlights);
 
             container = container
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(RESTORE_WIDTH))
-                        .w(px(GUTTER_WIDTH - RESTORE_WIDTH - TEXT_INSET))
-                        .h(px(LINE_HEIGHT))
-                        .overflow_hidden()
-                        .text_right()
-                        .pr(px(8.0))
-                        .text_color(
-                            colors
-                                .as_ref()
-                                .map_or(cx.theme().muted_foreground, |colors| colors.marker),
-                        )
-                        .child((line_index + 1).to_string()),
-                )
+                .child(Self::render_line_number(
+                    line_index,
+                    colors
+                        .as_ref()
+                        .map_or(cx.theme().muted_foreground, |colors| colors.marker),
+                ))
                 .child(
                     div()
                         .absolute()
@@ -768,7 +787,7 @@ impl AlignedEditor {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let geometry = self.geometry();
-        let width = geometry.pane_width() * 2.0;
+        let width = geometry.content_width();
         let pane_width = geometry.pane_width();
         let text_viewport_width = geometry.text_viewport_width();
 
@@ -846,7 +865,7 @@ impl AlignedEditor {
                 div()
                     .absolute()
                     .left(px(if selection.side == Side::Right {
-                        pane_width + GUTTER_WIDTH
+                        geometry.right_pane_left() + GUTTER_WIDTH
                     } else {
                         GUTTER_WIDTH
                     }))
@@ -966,6 +985,17 @@ impl AlignedEditor {
             )
             .child(rows)
             .child(self.render_scrollbar(cx))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(px(pane_width))
+                    .w(px(geometry.center_width()))
+                    .h(px(HEADER_HEIGHT))
+                    .bg(cx.theme().secondary)
+                    .border_b_1()
+                    .border_color(cx.theme().border),
+            )
             .child(self.render_footer(pane_width, cx))
             .child(self.render_pane_header(Side::Left, pane_width, cx))
             .child(self.render_pane_header(Side::Right, pane_width, cx))

@@ -7,7 +7,10 @@ use gpui_kit::component::{
     ActiveTheme, IconName, Sizable,
     button::{Button, ButtonVariants},
 };
-use gpui_kit::{Context, Div, InteractiveElement, MouseButton, ParentElement, Styled, div, px};
+use gpui_kit::{
+    Context, Div, InteractiveElement, MouseButton, ParentElement, StatefulInteractiveElement,
+    Styled, div, px,
+};
 use yori::geometry::{EditorGeometry, display_units, whole_rows};
 use yori_diff::SelectionRestore;
 use yori_document::{Document, editing::TextSelection};
@@ -41,7 +44,10 @@ impl AlignedEditor {
         geometry: EditorGeometry,
         cx: &mut Context<Self>,
     ) -> Div {
-        let mut controls = div().absolute().size_full();
+        let mut controls = div()
+            .absolute()
+            .size_full()
+            .child(self.render_connections(geometry, cx));
         let first_row = whole_rows(self.vertical_scroll / LINE_HEIGHT);
         let viewport_end = self.vertical_scroll + geometry.rows_viewport_height();
         let button_top = |rows: &std::ops::Range<usize>| {
@@ -57,16 +63,6 @@ impl AlignedEditor {
                 ),
             )
         };
-        let button_container = |top| {
-            div()
-                .absolute()
-                .left(px(geometry.pane_width() + 1.0))
-                .top(px(top))
-                .w(px(RESTORE_WIDTH - 2.0))
-                .h(px(LINE_HEIGHT))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_move(|_, _, cx| cx.stop_propagation())
-        };
 
         // Never leave a full-block action under a narrower text selection.
         if self
@@ -75,38 +71,41 @@ impl AlignedEditor {
             .is_some_and(|s| !s.range().is_empty())
         {
             if let Some(plan) = self.selection_restore() {
-                let top = display_units(plan.rows.start) * LINE_HEIGHT - self.vertical_scroll;
-                let height = display_units(plan.rows.len()) * LINE_HEIGHT;
-                for left in [0.0, geometry.pane_width()] {
-                    controls = controls.child(
-                        div()
-                            .absolute()
-                            .left(px(left + RESTORE_WIDTH))
-                            .top(px(top))
-                            .w(px(geometry.pane_width() - RESTORE_WIDTH))
-                            .h(px(height))
-                            .border_1()
-                            .border_color(cx.theme().muted_foreground),
-                    );
+                if !self.show_connections {
+                    let top = display_units(plan.rows.start) * LINE_HEIGHT - self.vertical_scroll;
+                    let height = display_units(plan.rows.len()) * LINE_HEIGHT;
+                    for left in [0.0, geometry.right_pane_left()] {
+                        controls = controls.child(
+                            div()
+                                .absolute()
+                                .left(px(left + RESTORE_WIDTH))
+                                .top(px(top))
+                                .w(px((geometry.pane_width() - RESTORE_WIDTH).max(0.0)))
+                                .h(px(height))
+                                .border_1()
+                                .border_color(cx.theme().muted_foreground),
+                        );
+                    }
                 }
 
                 if let Some(top) = button_top(&plan.rows) {
                     let description = self.restore_description(&plan);
                     controls = controls.child(
-                        button_container(top).child(
-                            Button::new("restore-selected-gutter")
-                                .icon(IconName::ArrowRight)
-                                .accessibility_label("Restore selected lines from baseline")
-                                .ghost()
-                                .compact()
-                                .with_size(px(LINE_HEIGHT))
-                                .w(px(RESTORE_WIDTH - 2.0))
-                                .tooltip(format!("{description} (Alt+Enter; undo: Ctrl+Z)"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.apply_selection_restore(&plan, window, cx);
-                                })),
-                        ),
+                        self.restore_button_container(top, plan.rows.clone(), geometry, cx)
+                            .child(
+                                Button::new("restore-selected-gutter")
+                                    .icon(IconName::ArrowRight)
+                                    .accessibility_label("Restore selected lines from baseline")
+                                    .ghost()
+                                    .compact()
+                                    .with_size(px(LINE_HEIGHT))
+                                    .w(px(RESTORE_WIDTH - 2.0))
+                                    .tooltip(format!("{description} (Alt+Enter; undo: Ctrl+Z)"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.apply_selection_restore(&plan, window, cx);
+                                    })),
+                            ),
                     );
                 }
             }
@@ -127,25 +126,56 @@ impl AlignedEditor {
             if let Some(top) = button_top(&block.rows) {
                 let expected = block.clone();
                 controls = controls.child(
-                    button_container(top).child(
-                        Button::new(("restore-block", index))
-                            .icon(IconName::ArrowRight)
-                            .accessibility_label("Restore block from baseline")
-                            .ghost()
-                            .compact()
-                            .with_size(px(LINE_HEIGHT))
-                            .w(px(RESTORE_WIDTH - 2.0))
-                            .tooltip("Restore this block from the left (undo: Ctrl+Z)")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.restore_block(index, &expected, window, cx);
-                            })),
-                    ),
+                    self.restore_button_container(top, block.rows.clone(), geometry, cx)
+                        .child(
+                            Button::new(("restore-block", index))
+                                .icon(IconName::ArrowRight)
+                                .accessibility_label("Restore block from baseline")
+                                .ghost()
+                                .compact()
+                                .with_size(px(LINE_HEIGHT))
+                                .w(px(RESTORE_WIDTH - 2.0))
+                                .tooltip("Restore this block from the left (undo: Ctrl+Z)")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.restore_block(index, &expected, window, cx);
+                                })),
+                        ),
                 );
             }
         }
 
         controls
+    }
+
+    fn restore_button_container(
+        &self,
+        top: f32,
+        rows: std::ops::Range<usize>,
+        geometry: EditorGeometry,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let (left, width) = if self.show_connections {
+            (geometry.pane_width(), geometry.center_width())
+        } else {
+            (geometry.right_pane_left() + 1.0, RESTORE_WIDTH - 2.0)
+        };
+
+        div()
+            .id(("restore-target", rows.start))
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(width))
+            .h(px(LINE_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .on_hover(cx.listener(|this, _: &bool, window, cx| {
+                this.update_connection_hover(window, cx);
+            }))
     }
 }
 

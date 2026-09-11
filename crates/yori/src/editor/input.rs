@@ -72,6 +72,7 @@ impl AlignedEditor {
         }
 
         self.alignment = Alignment::between(&self.left.document, &self.right.document);
+        self.hovered_connection = None;
 
         self.selection = Some(Selection {
             side: Side::Right,
@@ -583,7 +584,8 @@ impl EntityInputHandler for AlignedEditor {
         Some(Bounds::new(
             point(
                 origin.x
-                    + px(self.geometry().pane_width() + GUTTER_WIDTH + x - self.horizontal_scroll),
+                    + px(self.geometry().right_pane_left() + GUTTER_WIDTH + x
+                        - self.horizontal_scroll),
                 origin.y
                     + px(HEADER_HEIGHT + display_units(row) * LINE_HEIGHT - self.vertical_scroll),
             ),

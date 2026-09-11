@@ -38,6 +38,12 @@ impl AlignedEditor {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(self.render_pane_status(Side::Left, pane_width, cx))
+            .child(
+                div()
+                    .w(px(self.geometry().center_width()))
+                    .h_full()
+                    .flex_shrink_0(),
+            )
             .child(self.render_pane_status(Side::Right, pane_width + super::scrollbar::WIDTH, cx))
     }
 
@@ -148,6 +154,7 @@ impl AlignedEditor {
 
     fn render_options_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let whitespace = self.show_whitespace;
+        let connections = self.show_connections;
         let vim = Self::vim_enabled(cx);
         let editor = cx.weak_entity();
 
@@ -166,6 +173,16 @@ impl AlignedEditor {
                         });
                     });
 
+                let connections_editor = editor.clone();
+                let connections_item =
+                    PopupMenuItem::new("Show change connections (this comparison)")
+                        .checked(connections)
+                        .on_click(move |_, window, cx| {
+                            let _ = connections_editor.update(cx, |editor, cx| {
+                                editor.set_connections(!connections, window, cx);
+                            });
+                        });
+
                 let vim_editor = editor.clone();
                 let vim_item = PopupMenuItem::new("Vim keybindings (all tabs)")
                     .checked(vim)
@@ -175,7 +192,10 @@ impl AlignedEditor {
                         });
                     });
 
-                menu.item(whitespace_item).separator().item(vim_item)
+                menu.item(whitespace_item)
+                    .item(connections_item)
+                    .separator()
+                    .item(vim_item)
             })
     }
 

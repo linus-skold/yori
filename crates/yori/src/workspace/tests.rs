@@ -184,6 +184,7 @@ fn vim_preference_is_shared_but_typing_history_and_pending_commands_are_tab_loca
 
         window.press("down", cx);
         window.press("down", cx);
+        window.press("down", cx);
         window.press("enter", cx);
     });
     cx.run_until_parked();

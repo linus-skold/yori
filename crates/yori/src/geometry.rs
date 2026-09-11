@@ -41,6 +41,7 @@ pub struct EditorGeometry {
     header_height: f32,
     gutter_width: f32,
     line_height: f32,
+    center_width: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,12 +71,34 @@ impl EditorGeometry {
             header_height: header_height.max(0.0),
             gutter_width: gutter_width.max(0.0),
             line_height: line_height.max(f32::EPSILON),
+            center_width: 0.0,
         }
     }
 
     #[must_use]
+    pub fn with_center_width(mut self, width: f32) -> Self {
+        self.center_width = width.clamp(0.0, self.viewport_width);
+        self
+    }
+
+    #[must_use]
+    pub fn center_width(self) -> f32 {
+        self.center_width
+    }
+
+    #[must_use]
     pub fn pane_width(self) -> f32 {
-        self.viewport_width / 2.0
+        (self.viewport_width - self.center_width) / 2.0
+    }
+
+    #[must_use]
+    pub fn right_pane_left(self) -> f32 {
+        self.pane_width() + self.center_width
+    }
+
+    #[must_use]
+    pub fn content_width(self) -> f32 {
+        self.viewport_width
     }
 
     #[must_use]
@@ -102,7 +125,7 @@ impl EditorGeometry {
         let pane_x = if left_side {
             local_x
         } else {
-            local_x - self.pane_width()
+            local_x - self.right_pane_left()
         };
         let row_y = (local_y - self.header_height + vertical_scroll).max(0.0);
         let in_gutter = pane_x < self.gutter_width;
