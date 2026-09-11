@@ -1,5 +1,11 @@
 # Agent Instructions
 
+## Screenshots and privacy
+
+Never capture screenshots of the user's system, desktop, windows, or applications,
+including through tools, scripts, or subagents. When visual evidence is needed,
+ask the user to take and provide a screenshot instead.
+
 ## Commits and pull requests
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for every commit message and pull-request title:
