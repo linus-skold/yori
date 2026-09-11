@@ -17,3 +17,11 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[profile.dev]
+split-debuginfo = "unpacked"
+debug = "limited"
+
+# Optimize third-party dependencies while keeping workspace crates quick to rebuild.
+[profile.dev.package."*"]
+opt-level = 3
