@@ -7,9 +7,9 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
 };
 use gpui_kit::{Context, FontWeight, IntoElement, ParentElement, Styled, div, px};
-use yori::navigation::ChangeDirection;
+use yori::{geometry::display_units, navigation::ChangeDirection};
 
-use super::{AlignedEditor, FILE_HEADER_HEIGHT, NextChange, PreviousChange, Side, TOOLBAR_HEIGHT};
+use super::{AlignedEditor, HEADER_HEIGHT, NextChange, PreviousChange, Side};
 
 fn path_labels(path: &Path) -> (String, String) {
     let name = path
@@ -29,41 +29,24 @@ fn path_labels(path: &Path) -> (String, String) {
 }
 
 impl AlignedEditor {
-    pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_review_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.alignment.blocks().len();
-        let label = if let Some(index) = self.navigation.current(&self.alignment) {
-            format!("Change {} of {count}", index + 1)
-        } else if count == 0 {
-            "No changes".to_owned()
-        } else if count == 1 {
-            "1 change".to_owned()
-        } else {
-            format!("{count} changes")
-        };
+        let current = self
+            .navigation
+            .current(&self.alignment)
+            .map_or(0, |index| index + 1);
+        let label = format!("{current} of {count}");
 
+        // Reserve both numbers at the total's digit count, including the 9 → 10 transition.
+        let counter_width = 24.0 + 16.0 * display_units(count.to_string().len());
         let restore = self.selection_restore();
-        let label = restore
-            .as_ref()
-            .map_or(label, |plan| self.restore_description(plan));
 
         div()
-            .absolute()
-            .top(px(0.0))
-            .left(px(0.0))
-            .w_full()
-            .h(px(TOOLBAR_HEIGHT))
-            .px(px(12.0))
             .flex()
             .items_center()
-            .gap(px(12.0))
-            .overflow_hidden()
-            .cursor_default()
-            .font_family(cx.theme().font_family.clone())
-            .text_size(px(13.0))
-            .line_height(px(20.0))
-            .bg(cx.theme().secondary)
-            .border_b_1()
-            .border_color(cx.theme().border)
+            .flex_shrink_0()
+            .gap(px(8.0))
+            .text_size(px(12.0))
             .child(
                 div()
                     .flex()
@@ -105,19 +88,24 @@ impl AlignedEditor {
             )
             .child(
                 div()
-                    .min_w_0()
-                    .flex_1()
-                    .truncate()
+                    .w(px(counter_width))
+                    .flex_shrink_0()
+                    .text_right()
                     .text_color(cx.theme().muted_foreground)
                     .child(label),
             )
             .children(restore.map(|plan| {
+                let tooltip = format!(
+                    "{} (Alt+Enter; undo: Ctrl+Z)",
+                    self.restore_description(&plan)
+                );
+
                 Button::new("restore-selected-lines")
                     .icon(IconName::ArrowRight)
                     .label("Restore lines")
                     .ghost()
-                    .with_size(px(28.0))
-                    .tooltip("Restore outlined lines from baseline (Alt+Enter; undo: Ctrl+Z)")
+                    .small()
+                    .tooltip(tooltip)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.apply_selection_restore(&plan, window, cx);
                     }))
@@ -131,17 +119,13 @@ impl AlignedEditor {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (name, directory) = path_labels(&self.document(side).path);
-        let role = match side {
-            Side::Left => "Baseline · Read-only",
-            Side::Right => "Local · Memory only",
-        };
 
         div()
             .absolute()
-            .top(px(TOOLBAR_HEIGHT))
+            .top(px(0.0))
             .left(px(if side == Side::Left { 0.0 } else { pane_width }))
             .w(px(pane_width))
-            .h(px(FILE_HEADER_HEIGHT))
+            .h(px(HEADER_HEIGHT))
             .px(px(16.0))
             .flex()
             .flex_col()
@@ -157,6 +141,8 @@ impl AlignedEditor {
             .bg(cx.theme().secondary)
             .child(
                 div()
+                    .h(px(28.0))
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .gap(px(8.0))
@@ -173,13 +159,14 @@ impl AlignedEditor {
                             .font_weight(FontWeight::MEDIUM)
                             .child(name),
                     )
-                    .child(
+                    .children((side == Side::Left).then(|| {
                         div()
                             .flex_shrink_0()
                             .text_size(px(12.0))
                             .text_color(cx.theme().muted_foreground)
-                            .child(role),
-                    ),
+                            .child("Baseline · Read-only")
+                    }))
+                    .children((side == Side::Right).then(|| self.render_review_controls(cx))),
             )
             .child(
                 div()
@@ -194,9 +181,53 @@ impl AlignedEditor {
 #[cfg(test)]
 mod tests {
     use super::path_labels;
-    use crate::editor::{GUTTER_WIDTH, HEADER_HEIGHT, LINE_HEIGHT, TEXT_INSET};
-    use std::path::Path;
+    use crate::editor::{
+        AlignedEditor, GUTTER_WIDTH, HEADER_HEIGHT, LINE_HEIGHT, PaneDocument, TEXT_INSET,
+    };
+    use gpui_kit::component::Root;
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, TestAppContext};
+    use std::{fmt::Write as _, path::Path};
     use yori::geometry::EditorGeometry;
+    use yori_document::Document;
+
+    #[gpui_kit::test]
+    fn navigation_keeps_arrow_positions_stable_across_counter_changes(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::appearance::init(cx);
+            crate::editor::init(cx);
+        });
+
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let pane = |name: &str| {
+                let mut text = String::new();
+                for index in 0..12 {
+                    writeln!(text, "unchanged {index}\n{name} {index}").unwrap();
+                }
+
+                let document = Document::from_bytes(text.into_bytes()).unwrap();
+
+                PaneDocument::new(name.into(), document)
+            };
+            let editor = cx.new(|cx| AlignedEditor::new(pane("left"), pane("right"), window, cx));
+
+            Root::new(editor, window, cx)
+        });
+        cx.update(TestWindowExt::render_frame);
+        cx.run_until_parked();
+
+        let initial = cx.update(|window, _| window.find("next-change").bounds());
+        for _ in 0..12 {
+            cx.update(|window, cx| window.click("next-change", cx));
+            cx.run_until_parked();
+
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find("next-change").bounds(), initial);
+            });
+        }
+    }
 
     #[test]
     fn header_and_type_spacing_share_the_editors_hit_geometry() {

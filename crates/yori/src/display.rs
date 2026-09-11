@@ -33,6 +33,19 @@ pub fn source_offset_at(
         .source_offset(display_byte)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhitespaceKind {
+    Space,
+    Tab,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhitespaceMark {
+    pub display: Range<usize>,
+    pub kind: WhitespaceKind,
+    pub trailing: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayLine {
     pub text: String,
@@ -85,6 +98,32 @@ impl DisplayLine {
             boundaries,
             spans,
         }
+    }
+
+    /// Describe overlays for the same source used to build this display line.
+    /// Markers never replace the shaped text or participate in source mapping.
+    #[must_use]
+    pub fn whitespace_marks(&self, source: &str) -> Vec<WhitespaceMark> {
+        let trailing_start = source.trim_end_matches([' ', '\t']).len();
+        let source_start = self.boundaries[0].1;
+
+        self.spans
+            .iter()
+            .zip(source.chars())
+            .filter_map(|((bytes, display), character)| {
+                let kind = match character {
+                    ' ' => WhitespaceKind::Space,
+                    '\t' => WhitespaceKind::Tab,
+                    _ => return None,
+                };
+
+                Some(WhitespaceMark {
+                    display: display.clone(),
+                    kind,
+                    trailing: bytes.start - source_start >= trailing_start,
+                })
+            })
+            .collect()
     }
 
     #[must_use]

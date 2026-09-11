@@ -9,6 +9,7 @@ mod highlighting;
 mod input;
 mod restoration;
 mod vim;
+mod whitespace;
 
 use crate::appearance;
 use yori_document::editing::{EditHistory, EditOutcome, Motion};
@@ -31,10 +32,8 @@ use yori::{
 use yori_diff::{Alignment, DiffKind, IntralineDiff};
 use yori_document::Document;
 
-const TOOLBAR_HEIGHT: f32 = 40.0;
 const FOOTER_HEIGHT: f32 = 32.0;
-const FILE_HEADER_HEIGHT: f32 = 64.0;
-const HEADER_HEIGHT: f32 = TOOLBAR_HEIGHT + FILE_HEADER_HEIGHT;
+const HEADER_HEIGHT: f32 = 64.0;
 const LINE_HEIGHT: f32 = 22.0;
 const RESTORE_WIDTH: f32 = 26.0;
 const TEXT_INSET: f32 = 8.0;
@@ -210,6 +209,7 @@ pub(super) struct AlignedEditor {
     selection: Option<Selection>,
     vertical_scroll: f32,
     horizontal_scroll: f32,
+    show_whitespace: bool,
     // Mouse events are window-local; measured bounds provide the editor's content-local inset.
     content_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
@@ -257,6 +257,7 @@ impl AlignedEditor {
             selection: None,
             vertical_scroll: 0.0,
             horizontal_scroll: 0.0,
+            show_whitespace: false,
             content_bounds: Rc::new(Cell::new(Bounds::new(
                 point(px(0.0), px(0.0)),
                 window.viewport_size(),
@@ -426,9 +427,14 @@ impl AlignedEditor {
             .left
             .max_display_columns
             .max(self.right.max_display_columns);
+        let marker_columns = if self.show_whitespace {
+            whitespace::ENDING_LABEL_COLUMNS
+        } else {
+            0
+        };
 
         horizontal_scroll_limit(
-            max_columns,
+            max_columns + marker_columns,
             cell_width,
             self.geometry().text_viewport_width() - 2.0,
         )
@@ -648,6 +654,14 @@ impl AlignedEditor {
                 TAB_WIDTH,
             );
             let highlights = self.text_highlights(side, pane, line_index, &display, intraline, cx);
+            let whitespace = self.show_whitespace.then(|| {
+                self.render_whitespace(
+                    &display,
+                    pane.document.content(line_index),
+                    source_line.ending,
+                    cx,
+                )
+            });
             let text =
                 StyledText::new(SharedString::from(display.text)).with_highlights(highlights);
 
@@ -681,7 +695,8 @@ impl AlignedEditor {
                                 .left(px(-self.horizontal_scroll))
                                 .whitespace_nowrap()
                                 .child(text),
-                        ),
+                        )
+                        .children(whitespace),
                 );
         }
 
@@ -945,17 +960,16 @@ impl AlignedEditor {
                 .size_full(),
             )
             .child(rows)
-            .child(self.render_toolbar(cx))
             .child(self.render_footer(pane_width, cx))
             .child(self.render_pane_header(Side::Left, pane_width, cx))
             .child(self.render_pane_header(Side::Right, pane_width, cx))
             .child(
                 div()
                     .absolute()
-                    .top(px(TOOLBAR_HEIGHT))
+                    .top(px(0.0))
                     .left(px(pane_width))
                     .w(px(1.0))
-                    .h(px(FILE_HEADER_HEIGHT + geometry.rows_viewport_height()))
+                    .h(px(HEADER_HEIGHT + geometry.rows_viewport_height()))
                     .bg(cx.theme().border),
             )
     }

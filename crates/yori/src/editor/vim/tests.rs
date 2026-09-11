@@ -65,12 +65,19 @@ fn modal_commands_route_before_native_text_and_undo_the_whole_change(cx: &mut Te
     });
 }
 
+fn toggle_vim_from_options(window: &mut Window, cx: &mut App) {
+    window.click("editor-options", cx);
+    window.render_frame(cx);
+
+    window.press("down", cx);
+    window.press("down", cx);
+    window.press("enter", cx);
+}
+
 #[gpui_kit::test]
 fn toggling_off_restores_conventional_typing_without_losing_undo(cx: &mut TestAppContext) {
     let (editor, cx) = harness(cx);
-    cx.update(|window, cx| {
-        window.click("vim-mode", cx);
-    });
+    cx.update(toggle_vim_from_options);
     cx.run_until_parked();
     cx.update(|window, cx| {
         for key in ["shift-a", "x", "y"] {
@@ -78,7 +85,8 @@ fn toggling_off_restores_conventional_typing_without_losing_undo(cx: &mut TestAp
         }
 
         assert_eq!(editor.read(cx).right.document.text(), "let old = 1;xy\n");
-        window.click("vim-mode", cx);
+
+        toggle_vim_from_options(window, cx);
     });
     cx.run_until_parked();
     cx.update(|window, cx| {

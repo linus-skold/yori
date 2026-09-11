@@ -175,7 +175,14 @@ fn vim_preference_is_shared_but_typing_history_and_pending_commands_are_tab_loca
     std::fs::write(&left, "baseline\n").unwrap();
     std::fs::write(&right, "local\n").unwrap();
 
-    cx.update(|window, cx| window.click("vim-mode", cx));
+    cx.update(|window, cx| {
+        window.click("editor-options", cx);
+        window.render_frame(cx);
+
+        window.press("down", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    });
     cx.run_until_parked();
     cx.update(|window, cx| {
         window.press("i", cx);

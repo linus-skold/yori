@@ -4,7 +4,6 @@ use gpui_kit::component::{
     ActiveTheme, Sizable,
     button::{Button, ButtonVariants},
     menu::{DropdownMenu, PopupMenuItem},
-    switch::Switch,
     tooltip::Tooltip,
 };
 use gpui_kit::{
@@ -76,7 +75,7 @@ impl AlignedEditor {
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             }))
             .child(div().flex_1())
-            .children((side == Side::Right).then(|| self.render_input_mode(cx)))
+            .children((side == Side::Right).then(|| self.render_options_controls(cx)))
     }
 
     fn render_language_menu(&self, side: Side, cx: &mut Context<Self>) -> impl IntoElement {
@@ -99,7 +98,7 @@ impl AlignedEditor {
         .label(label)
         .dropdown_caret(true)
         .ghost()
-        .with_size(px(24.0))
+        .small()
         .accessibility_label(if side == Side::Left {
             "Baseline language"
         } else {
@@ -129,7 +128,7 @@ impl AlignedEditor {
         })
     }
 
-    fn render_input_mode(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_options_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = Self::vim_enabled(cx);
 
         div()
@@ -139,20 +138,45 @@ impl AlignedEditor {
             .flex_shrink_0()
             .children(enabled.then(|| {
                 div()
-                    .w(px(80.0))
+                    .w(px(108.0))
                     .text_size(px(11.0))
                     .text_color(cx.theme().muted_foreground)
-                    .child(self.vim.mode().label())
+                    .child(format!("Vim: {}", self.vim.mode().label()))
             }))
-            .child(
-                Switch::new("vim-mode")
-                    .label("Vim")
-                    .checked(enabled)
-                    .small()
-                    .on_change(cx.listener(|this, enabled, window, cx| {
-                        this.toggle_vim(*enabled, window, cx);
-                    })),
-            )
+            .child(self.render_options_menu(cx))
+    }
+
+    fn render_options_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let whitespace = self.show_whitespace;
+        let vim = Self::vim_enabled(cx);
+        let editor = cx.weak_entity();
+
+        Button::new("editor-options")
+            .label("Options")
+            .dropdown_caret(true)
+            .ghost()
+            .small()
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _, _| {
+                let whitespace_editor = editor.clone();
+                let whitespace_item = PopupMenuItem::new("Show whitespace (this comparison)")
+                    .checked(whitespace)
+                    .on_click(move |_, window, cx| {
+                        let _ = whitespace_editor.update(cx, |editor, cx| {
+                            editor.set_whitespace(!whitespace, window, cx);
+                        });
+                    });
+
+                let vim_editor = editor.clone();
+                let vim_item = PopupMenuItem::new("Vim keybindings (all tabs)")
+                    .checked(vim)
+                    .on_click(move |_, window, cx| {
+                        let _ = vim_editor.update(cx, |editor, cx| {
+                            editor.toggle_vim(!vim, window, cx);
+                        });
+                    });
+
+                menu.item(whitespace_item).separator().item(vim_item)
+            })
     }
 
     fn choose_language(
