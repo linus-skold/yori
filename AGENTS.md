@@ -6,6 +6,32 @@ Never capture screenshots of the user's system, desktop, windows, or application
 including through tools, scripts, or subagents. When visual evidence is needed,
 ask the user to take and provide a screenshot instead.
 
+## Rust readability
+
+Write for human scanning, not minimum vertical space. Use blank lines as logical
+punctuation within functions and multi-step closures:
+
+- Separate an opening guard section from the main path with a blank line.
+  Related guards may stay together; a guard inside a loop follows the same rule.
+- Separate distinct phases: setup, computation, state updates, external/UI effects,
+  and final notification or result. Keep a coherent state update together, then
+  leave breathing room before focus changes, I/O, or notification when those are
+  a separate step. Short, single-purpose functions can remain compact.
+- Keep statements that express one idea together: related local derivations,
+  paired updates, and assertion clusters. Do not insert a blank line after every
+  declaration, statement, or fixed number of lines.
+- Keep fluent GPUI builder chains contiguous. Separate preparatory locals from
+  the builder, and give multi-step closure bodies the same logical grouping as
+  functions. Use meaningful locals to clarify dense nested expressions; do not
+  mechanically expand trivial closures or split every modifier with blank lines.
+- In tests, separate substantial setup, action, and assertion phases, and put a
+  blank line between independent scenarios. Whitespace should show this structure
+  without mandatory arrange/act/assert comments.
+
+Before finishing, review the changed functions for these logical groups, then run
+rustfmt. Formatter compliance alone does not establish readable spacing. Comments
+should explain non-obvious intent or invariants, not label every ordinary phase.
+
 ## Local validation
 
 After the final edit, run `./scripts/check`. A task is complete only when the
