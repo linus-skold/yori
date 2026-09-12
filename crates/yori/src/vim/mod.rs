@@ -5,12 +5,16 @@
 
 mod keys;
 mod motions;
+mod target;
+
+pub use target::EditTarget;
 
 use std::ops::Range;
 
+use yori_diff::merge::MergeError;
 use yori_document::{
     Document, InputError,
-    editing::{self, EditHistory, EditOutcome, TextSelection},
+    editing::{self, EditOutcome, SourceEdit, TextSelection},
 };
 
 use keys::{Command, Insert, Keys, Motion, Operator, Target};
@@ -52,6 +56,8 @@ struct OperationRange {
 pub struct Outcome {
     pub selection: TextSelection,
     pub edit: Option<EditOutcome>,
+    /// Owner-derived range restoration when retiring a net-zero merge group.
+    pub conflict_ranges_restored: bool,
     /// False only for native Insert-mode input.
     pub consumed: bool,
 }
@@ -77,18 +83,16 @@ impl Vim {
     }
 
     /// Mouse placement ends a typing transaction without taking an Insert user out of Insert.
-    pub fn reposition(
-        &mut self,
-        document: &Document,
-        history: &mut EditHistory,
-        selection: TextSelection,
-    ) {
+    /// Returns whether the owner restored conflict ranges on retirement.
+    pub fn reposition(&mut self, target: EditTarget<'_>, selection: TextSelection) -> bool {
         let inserting = self.mode == Mode::Insert;
-        self.cancel(document, history, selection);
+        let conflict_ranges_restored = self.cancel(target, selection);
 
         if inserting {
             self.mode = Mode::Insert;
         }
+
+        conflict_ranges_restored
     }
 
     /// Import a real mouse/keyboard selection without introducing a second selection model.
@@ -117,14 +121,12 @@ impl Vim {
 
     /// End a modal interaction before focus loss or disabling Vim.
     /// This leaves the caller's selection intact and commits, rather than discards, typing.
-    pub fn cancel(
-        &mut self,
-        document: &Document,
-        history: &mut EditHistory,
-        selection: TextSelection,
-    ) {
-        history.finish_transaction(document, selection);
+    /// Returns whether the owner restored conflict ranges on retirement.
+    pub fn cancel(&mut self, mut target: EditTarget<'_>, selection: TextSelection) -> bool {
+        let conflict_ranges_restored = target.finish(selection);
         *self = Self::default();
+
+        conflict_ranges_restored
     }
 
     /// Route history keys through a host's richer history (for example merge
@@ -144,12 +146,11 @@ impl Vim {
     pub fn handle(
         &mut self,
         key: &str,
-        document: &mut Document,
-        history: &mut EditHistory,
+        mut target: EditTarget<'_>,
         selection: TextSelection,
         register: &mut Register,
-        writable: bool,
-    ) -> Result<Outcome, InputError> {
+    ) -> Result<Outcome, MergeError> {
+        let document = target.document();
         if key == "escape" {
             let head = if self.mode == Mode::Insert {
                 let content = document.line_content_range(document.line_at_offset(selection.head));
@@ -159,14 +160,17 @@ impl Vim {
             };
 
             let selection = TextSelection::caret(normal_cursor(document, head));
-            self.cancel(document, history, selection);
+            let conflict_ranges_restored = self.cancel(target, selection);
+            let mut outcome = Self::outcome(selection, None);
+            outcome.conflict_ranges_restored = conflict_ranges_restored;
 
-            return Ok(Self::outcome(selection, None));
+            return Ok(outcome);
         }
         if self.mode == Mode::Insert {
             return Ok(Outcome {
                 selection,
                 edit: None,
+                conflict_ranges_restored: false,
                 consumed: false,
             });
         }
@@ -184,22 +188,54 @@ impl Vim {
             command,
             Command::Move(..) | Command::Visual(_) | Command::Operate(Operator::Yank, ..)
         );
-        if mutable && !writable {
+        if mutable && !target.writable() {
             return Ok(Self::outcome(selection, None));
         }
 
-        self.execute(command, document, history, selection, cursor, register)
+        if matches!(command, Command::Undo | Command::Redo) {
+            let conflict_ranges_restored = target.finish(selection);
+            *self = Self::default();
+            let update = target.travel(selection, command == Command::Redo)?;
+            let next = update.as_ref().map_or(selection, |update| update.selection);
+
+            let mut outcome = Self::outcome(
+                TextSelection::caret(normal_cursor(target.document(), next.head)),
+                update.and_then(|update| update.edit),
+            );
+            outcome.conflict_ranges_restored = conflict_ranges_restored;
+
+            return Ok(outcome);
+        }
+
+        let inserting = matches!(
+            command,
+            Command::Insert(_) | Command::Operate(Operator::Change, ..)
+        );
+        // Merge historically groups every command; plain text groups only an
+        // Insert run. The targets defer starting a group until input validates.
+        let grouped = inserting || matches!(target, EditTarget::Merge(_));
+        let mut outcome = target.edit(selection, grouped, |source| {
+            self.execute(command, source, selection, cursor, register)
+        })?;
+
+        if self.mode == Mode::Insert {
+            target.begin(selection);
+        } else if grouped {
+            outcome.conflict_ranges_restored = target.finish(outcome.selection);
+        }
+
+        Ok(outcome)
     }
 
     fn execute(
         &mut self,
         command: Command,
-        document: &mut Document,
-        history: &mut EditHistory,
+        source: &mut dyn SourceEdit,
         selection: TextSelection,
         cursor: usize,
         register: &mut Register,
     ) -> Result<Outcome, InputError> {
+        let document = source.document();
         match command {
             Command::Move(motion, count) => {
                 let head = normal_cursor(
@@ -237,7 +273,7 @@ impl Vim {
                     None,
                 ))
             }
-            Command::Insert(insert) => self.insert(insert, document, history, selection, cursor),
+            Command::Insert(insert) => self.insert(insert, source, cursor),
             Command::Operate(operator, target, count) => {
                 let (range, linewise) =
                     self.target(document, selection, cursor, operator, target, count);
@@ -246,7 +282,7 @@ impl Vim {
                     linewise,
                 };
 
-                self.operate(operator, document, history, selection, target, register)
+                self.operate(operator, source, selection, target, register)
             }
             Command::DeleteChar(count) => {
                 let (range, linewise) = if self.visual.is_some() {
@@ -260,8 +296,7 @@ impl Vim {
 
                 self.operate(
                     Operator::Delete,
-                    document,
-                    history,
+                    source,
                     selection,
                     OperationRange {
                         bytes: range,
@@ -270,23 +305,9 @@ impl Vim {
                     register,
                 )
             }
-            Command::Paste(after, count) => {
-                self.paste(document, history, selection, register, after, count)
-            }
+            Command::Paste(after, count) => self.paste(source, selection, register, after, count),
             Command::Undo | Command::Redo => {
-                self.cancel(document, history, selection);
-
-                let edit = if command == Command::Undo {
-                    history.undo(document, selection)?
-                } else {
-                    history.redo(document, selection)?
-                };
-                let next = edit.as_ref().map_or(selection, |edit| edit.selection);
-
-                Ok(Self::outcome(
-                    TextSelection::caret(normal_cursor(document, next.head)),
-                    edit,
-                ))
+                unreachable!("history is routed before source commands")
             }
         }
     }
@@ -295,6 +316,7 @@ impl Vim {
         Outcome {
             selection,
             edit,
+            conflict_ranges_restored: false,
             consumed: true,
         }
     }
@@ -359,12 +381,12 @@ impl Vim {
     fn operate(
         &mut self,
         operator: Operator,
-        document: &mut Document,
-        history: &mut EditHistory,
+        source: &mut dyn SourceEdit,
         selection: TextSelection,
         target: OperationRange,
         register: &mut Register,
     ) -> Result<Outcome, InputError> {
+        let document = source.document();
         let OperationRange {
             bytes: mut range,
             linewise,
@@ -411,10 +433,9 @@ impl Vim {
             range.start = editing::previous_grapheme(document.text(), range.start);
         }
 
-        if operator == Operator::Change {
-            history.begin_transaction(document, selection);
-        }
-        let edit = history.replace(document, selection, range.clone(), replacement)?;
+        let replacement = replacement.to_owned();
+        let update = source.replace(range.clone(), &replacement)?;
+        let document = source.document();
 
         *register = copied;
         let head = if operator == Operator::Change {
@@ -424,17 +445,16 @@ impl Vim {
             normal_cursor(document, range.start)
         };
 
-        Ok(Self::outcome(TextSelection::caret(head), Some(edit)))
+        Ok(Self::outcome(TextSelection::caret(head), update.edit))
     }
 
     fn insert(
         &mut self,
         insert: Insert,
-        document: &mut Document,
-        history: &mut EditHistory,
-        selection: TextSelection,
+        source: &mut dyn SourceEdit,
         cursor: usize,
     ) -> Result<Outcome, InputError> {
+        let document = source.document();
         let content = document.line_content_range(document.line_at_offset(cursor));
         let offset = match insert {
             Insert::Here => cursor,
@@ -444,20 +464,20 @@ impl Vim {
             Insert::Above => content.start,
         };
 
-        history.begin_transaction(document, selection);
         self.mode = Mode::Insert;
         self.visual = None;
         self.column = None;
 
         if matches!(insert, Insert::Above | Insert::Below) {
-            let edit = history.replace(document, selection, offset..offset, document.newline())?;
+            let newline = document.newline().to_owned();
+            let update = source.replace(offset..offset, &newline)?;
             let head = if insert == Insert::Above {
                 offset
             } else {
-                edit.selection.head
+                update.selection.head
             };
 
-            return Ok(Self::outcome(TextSelection::caret(head), Some(edit)));
+            return Ok(Self::outcome(TextSelection::caret(head), update.edit));
         }
 
         Ok(Self::outcome(TextSelection::caret(offset), None))
@@ -465,13 +485,13 @@ impl Vim {
 
     fn paste(
         &mut self,
-        document: &mut Document,
-        history: &mut EditHistory,
+        source: &mut dyn SourceEdit,
         selection: TextSelection,
         register: &mut Register,
         after: bool,
         count: usize,
     ) -> Result<Outcome, InputError> {
+        let document = source.document();
         if register.text.is_empty() {
             return Ok(Self::outcome(selection, None));
         }
@@ -527,14 +547,15 @@ impl Vim {
         self.visual = None;
         self.column = None;
 
-        let edit = history.replace(document, selection, range, &text)?;
+        let update = source.replace(range, &text)?;
+        let document = source.document();
         if !linewise {
-            head = editing::previous_grapheme(document.text(), edit.selection.head);
+            head = editing::previous_grapheme(document.text(), update.selection.head);
         }
 
         Ok(Self::outcome(
             TextSelection::caret(normal_cursor(document, head)),
-            Some(edit),
+            update.edit,
         ))
     }
 }

@@ -3,10 +3,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use gpui_kit::{App, Context, Global, KeyDownEvent, Window};
-use yori::vim::{Mode, Register};
-use yori_document::editing::TextSelection;
+use yori::vim::{EditTarget, Mode, Register};
+use yori_document::editing::{EditUpdate, TextSelection};
 
-use super::{AlignedEditor, Selection, Side};
+use super::{AlignedEditor, Selection, Side, completion::Placement};
 
 #[derive(Default)]
 pub(super) struct VimPreferences {
@@ -35,20 +35,24 @@ impl AlignedEditor {
     pub(super) fn cancel_vim(&mut self) {
         // History always belongs to the editable pane, even when focus moved left.
         let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
-        self.vim
-            .cancel(&self.right.document, &mut self.history, selection);
-        if let Some(merge) = &mut self.merge {
-            merge.session.finish_transaction(selection);
-        }
+        let target = if let Some(merge) = &mut self.merge {
+            EditTarget::Merge(&mut merge.session)
+        } else {
+            EditTarget::Document(&mut self.right.document, &mut self.history)
+        };
+        let conflict_ranges_restored = self.vim.cancel(target, selection);
+        self.complete_retirement(conflict_ranges_restored);
     }
 
     pub(super) fn reposition_vim(&mut self) {
         let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
-        self.vim
-            .reposition(&self.right.document, &mut self.history, selection);
-        if let Some(merge) = &mut self.merge {
-            merge.session.finish_transaction(selection);
-        }
+        let target = if let Some(merge) = &mut self.merge {
+            EditTarget::Merge(&mut merge.session)
+        } else {
+            EditTarget::Document(&mut self.right.document, &mut self.history)
+        };
+        let conflict_ranges_restored = self.vim.reposition(target, selection);
+        self.complete_retirement(conflict_ranges_restored);
     }
 
     pub(super) fn sync_vim_selection(&mut self, cx: &App) {
@@ -123,43 +127,31 @@ impl AlignedEditor {
         if matches!(key, "u" | "ctrl-r") {
             if let Some(redo) = self.vim.external_history_key(key) {
                 self.travel_history(redo, window, cx);
+            } else {
+                cx.notify();
             }
             window.prevent_default();
             cx.stop_propagation();
-            cx.notify();
             return;
         }
 
-        let anchor = self.view_anchor();
         let register = Rc::clone(&cx.global::<VimPreferences>().register);
-        let outcome = self.handle_vim_command(key, selection.side, old, &mut register.borrow_mut());
-
-        match outcome {
-            Ok(outcome) => {
-                if let Some(edit) = &outcome.edit {
-                    self.finish_edit(&anchor, edit, window, cx);
-                }
-
-                self.selection = Some(Selection {
-                    side: selection.side,
-                    anchor: outcome.selection.anchor,
-                    head: outcome.selection.head,
-                });
-                self.preferred_column = None;
-
-                self.locate_caret_change();
-                self.reveal_cursor(window, cx);
-            }
-            Err(error) => {
-                eprintln!("Vim command rejected: {error}");
-                self.cancel_vim();
-                window.play_system_bell();
-            }
+        if let Err(error) = self.handle_vim_command(
+            key,
+            selection.side,
+            old,
+            &mut register.borrow_mut(),
+            window,
+            cx,
+        ) {
+            eprintln!("Vim command rejected: {error}");
+            self.cancel_vim();
+            window.play_system_bell();
+            cx.notify();
         }
 
         window.prevent_default();
         cx.stop_propagation();
-        cx.notify();
     }
 
     fn handle_vim_command(
@@ -168,55 +160,45 @@ impl AlignedEditor {
         side: Side,
         old: TextSelection,
         register: &mut Register,
-    ) -> Result<yori::vim::Outcome, yori_document::InputError> {
-        if side == Side::Right
-            && let Some(merge) = &mut self.merge
-        {
-            merge.session.begin_transaction(old);
-            let outcome = merge.session.edit_with(old, |document, history| {
-                self.vim
-                    .handle(key, document, history, old, register, true)
-                    .map(|mut outcome| {
-                        let edit = outcome.edit.take();
-                        (outcome, edit)
-                    })
-            });
-            match outcome {
-                Ok((mut outcome, update)) => {
-                    if self.vim.mode() != Mode::Insert {
-                        merge.session.finish_transaction(outcome.selection);
-                    }
-                    self.right.document = merge.session.result().clone();
-                    outcome.edit = update.edit;
-                    Ok(outcome)
-                }
-                Err(error) => {
-                    eprintln!("merge Vim command rejected: {error}");
-                    Err(yori_document::InputError::InvalidRange)
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), yori_diff::merge::MergeError> {
+        let anchor = self.view_anchor();
+        let target = match side {
+            Side::Right => {
+                if let Some(merge) = &mut self.merge {
+                    EditTarget::Merge(&mut merge.session)
+                } else {
+                    EditTarget::Document(&mut self.right.document, &mut self.history)
                 }
             }
-        } else {
-            let document = match side {
-                Side::Left => &mut self.left.document,
-                Side::Right => &mut self.right.document,
-                Side::Incoming => {
-                    &mut self
-                        .merge
-                        .as_mut()
-                        .expect("incoming pane")
-                        .incoming
-                        .document
-                }
-            };
-            self.vim.handle(
-                key,
-                document,
-                &mut self.history,
-                old,
-                register,
-                side == Side::Right,
-            )
-        }
+            Side::Left => EditTarget::ReadOnly(&self.left.document),
+            Side::Incoming => EditTarget::ReadOnly(
+                &self
+                    .merge
+                    .as_ref()
+                    .expect("incoming pane")
+                    .incoming
+                    .document,
+            ),
+        };
+        let outcome = self.vim.handle(key, target, old, register)?;
+
+        self.complete_edit(
+            anchor,
+            EditUpdate {
+                selection: outcome.selection,
+                edit: outcome.edit,
+            },
+            Placement::Vim {
+                side,
+                conflict_ranges_restored: outcome.conflict_ranges_restored,
+            },
+            window,
+            cx,
+        );
+
+        Ok(())
     }
 
     pub(super) fn toggle_vim(

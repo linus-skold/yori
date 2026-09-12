@@ -8,8 +8,6 @@ mod selection;
 #[cfg(test)]
 mod tests;
 
-use std::ops::Range;
-
 use gpui_kit::{ClipboardItem, Context, Window};
 use yori::geometry::display_units;
 use yori_diff::{
@@ -20,7 +18,10 @@ use yori_diff::{
 use yori_document::Document;
 use yori_document::editing::TextSelection;
 
-use super::{AlignedEditor, DirtyChanged, LINE_HEIGHT, PaneDocument, Selection, Side};
+use super::completion::{Placement, ViewAnchor};
+use super::{AlignedEditor, LINE_HEIGHT, PaneDocument, Selection, Side};
+
+pub(super) use layout::{BaseRow, MergeDisplay, RowKind};
 
 pub(super) struct MergeState {
     pub session: MergeSession,
@@ -29,13 +30,10 @@ pub(super) struct MergeState {
     pub revision: u64,
     pub hovered_lines: Option<MergeInput>,
     pub base_columns: usize,
-    pub rows: Vec<MergeRow>,
-    pub conflicts: Vec<Range<usize>>,
-    pub headers: Vec<usize>,
+    pub display: MergeDisplay,
     pub hovered: Option<(ConflictId, Take)>,
     pub current: Option<ConflictId>,
     pub show_base: bool,
-    pub base_preview: Option<(Range<usize>, Range<usize>)>,
 }
 
 impl AlignedEditor {
@@ -95,13 +93,10 @@ impl AlignedEditor {
             revision: 0,
             hovered_lines: None,
             base_columns,
-            rows: Vec::new(),
-            conflicts: Vec::new(),
-            headers: Vec::new(),
+            display: MergeDisplay::default(),
             hovered: None,
             current,
             show_base: false,
-            base_preview: None,
         });
         editor.dirty.saved_to_disk = false;
         editor.selection = Some(Selection {
@@ -119,50 +114,30 @@ impl AlignedEditor {
             return;
         };
 
-        merge.project_rows();
+        merge.display =
+            MergeDisplay::build(&merge.session, merge.current.filter(|_| merge.show_base));
+        merge.hovered = None;
         merge.revision += 1;
         merge.hovered_lines = None;
         merge.incoming_alignment = Alignment::from_projection(
             &merge.incoming.document,
             &self.right.document,
-            merge.rows.iter().map(|row| (row.incoming, row.result)),
+            merge
+                .display
+                .rows()
+                .iter()
+                .map(|row| (row.sources.incoming, row.sources.result)),
         );
 
         self.alignment = Alignment::from_projection(
             &self.left.document,
             &self.right.document,
-            merge.rows.iter().map(|row| (row.local, row.result)),
+            merge
+                .display
+                .rows()
+                .iter()
+                .map(|row| (row.sources.local, row.sources.result)),
         );
-    }
-
-    pub(super) fn apply_merge_update(
-        &mut self,
-        update: MergeUpdate,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let anchor = self.view_anchor();
-        self.right.document = self
-            .merge
-            .as_ref()
-            .expect("merge mode")
-            .session
-            .result()
-            .clone();
-        self.selection = Some(Selection {
-            side: Side::Right,
-            anchor: update.selection.anchor,
-            head: update.selection.head,
-        });
-
-        if let Some(edit) = update.edit {
-            self.finish_edit(&anchor, &edit, window, cx);
-        } else {
-            self.refresh_merge_projection();
-            cx.notify();
-        }
-
-        cx.emit(DirtyChanged);
     }
 
     pub(super) fn merge_take(
@@ -175,11 +150,11 @@ impl AlignedEditor {
         self.cancel_vim();
         self.finish_composition();
         let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
+        let anchor = self.view_anchor();
         let merge = self.merge.as_mut().expect("merge mode");
-        merge.current = Some(id);
         let update = merge.session.take(id, take, selection);
 
-        self.finish_merge_action(id, update, window, cx);
+        self.finish_merge_action(anchor, id, update, window, cx);
     }
 
     pub(super) fn merge_reset(
@@ -191,33 +166,29 @@ impl AlignedEditor {
         self.cancel_vim();
         self.finish_composition();
         let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
+        let anchor = self.view_anchor();
         let merge = self.merge.as_mut().expect("merge mode");
-        merge.current = Some(id);
         let update = merge.session.reset(id, selection);
 
-        self.finish_merge_action(id, update, window, cx);
+        self.finish_merge_action(anchor, id, update, window, cx);
     }
 
     fn finish_merge_action(
         &mut self,
+        anchor: ViewAnchor,
         id: ConflictId,
         update: Result<MergeUpdate, MergeError>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match update {
-            Ok(update) => self.apply_merge_update(update, window, cx),
-            Err(error) => eprintln!("merge action rejected: {error}"),
+            Ok(update) => self.complete_edit(anchor, update, Placement::Conflict(id), window, cx),
+            Err(error) => {
+                eprintln!("merge action rejected: {error}");
+                self.merge.as_mut().expect("merge mode").current = Some(id);
+                self.focus.focus(window, cx);
+            }
         }
-
-        // Taking a deletion can leave the caret in the next conflict. Keep the
-        // action's explicit target, not that neighboring caret-derived target.
-        if self.merge.as_ref().expect("merge mode").current != Some(id) {
-            self.merge.as_mut().expect("merge mode").current = Some(id);
-            self.refresh_merge_projection();
-        }
-
-        self.focus.focus(window, cx);
     }
 
     pub(super) fn merge_mark(
@@ -230,11 +201,11 @@ impl AlignedEditor {
         self.cancel_vim();
         self.finish_composition();
         let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
+        let anchor = self.view_anchor();
         let merge = self.merge.as_mut().expect("merge mode");
-        merge.current = Some(id);
         let update = merge.session.set_resolved(id, resolved, selection);
 
-        self.finish_merge_action(id, update, window, cx);
+        self.finish_merge_action(anchor, id, update, window, cx);
     }
 
     pub(super) fn merge_target(&self, previous: bool) -> Option<ConflictId> {
@@ -282,7 +253,7 @@ impl AlignedEditor {
         });
         self.refresh_merge_projection();
 
-        let row = self.merge.as_ref().expect("merge mode").headers[id.0];
+        let row = self.merge.as_ref().expect("merge mode").display.conflicts()[id.0].header_row;
         self.vertical_scroll = self
             .geometry()
             .change_scroll_top(row, self.alignment.rows().len());
@@ -298,10 +269,11 @@ impl AlignedEditor {
         };
 
         let current = merge
-            .conflicts
+            .display
+            .conflicts()
             .iter()
-            .position(|rows| rows.contains(&row))
-            .map(ConflictId);
+            .find(|conflict| conflict.source_span.contains(&row))
+            .map(|conflict| conflict.id);
         if let Some(current) = current
             && Some(current) != merge.current
         {
@@ -321,10 +293,8 @@ impl AlignedEditor {
 
         if let Some(id) = current {
             let merge = self.merge.as_ref().expect("merge mode");
-            let top = merge
-                .base_preview
-                .as_ref()
-                .map_or(merge.conflicts[id.0].start, |(rows, _)| rows.start);
+            let conflict = &merge.display.conflicts()[id.0];
+            let top = conflict.base_caption.unwrap_or(conflict.source_span.start);
             self.vertical_scroll = (display_units(top) * LINE_HEIGHT).min(
                 self.geometry()
                     .vertical_scroll_limit(self.alignment.rows().len()),

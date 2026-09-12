@@ -274,3 +274,27 @@ fn stale_line_preview_cannot_apply_after_a_same_length_edit(cx: &mut TestAppCont
         });
     });
 }
+
+#[gpui_kit::test]
+fn no_op_retirement_keeps_a_selected_take_preview_usable(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    cx.update(|window, cx| {
+        select_line(&editor, Side::Right, "    45", window, cx);
+        let preview = editor
+            .read(cx)
+            .merge_line_take(MergeInput::Incoming)
+            .unwrap();
+
+        editor.update(cx, |editor, cx| {
+            editor.finish_composition();
+            editor.cancel_vim();
+            editor.reposition_vim();
+            editor.apply_merge_line_take(&preview, window, cx);
+
+            assert!(editor.right.document.text().contains("    30"));
+            assert!(!editor.right.document.text().contains("    45"));
+            assert_eq!(editor.unresolved_count(), 3);
+            assert_synchronized(editor);
+        });
+    });
+}

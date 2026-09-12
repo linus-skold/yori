@@ -27,6 +27,10 @@ The unified surface for reviewing differences, directly editing permitted
 documents and transferring changes between them.
 _Avoid_: Separate edit mode when describing a different viewing surface
 
+**Display row**:
+A horizontal position in the diff editor that can contain source lines, alignment
+gaps, conflict controls or base context; it is not itself a source line.
+
 **Alignment row**:
 A blank display position on one side of a comparison that lines up corresponding
 source content without being a source line itself.
@@ -40,6 +44,11 @@ _Avoid_: Three-way merge, conflict resolution
 **Three-way merge**:
 Reconciliation of two versions relative to a common base into a result document,
 including resolution of conflicting changes.
+
+**Merge display**:
+The aligned presentation of local, result and incoming documents in a three-way
+merge, including conflict controls and optional base excerpts. Presentation-only
+content is distinct from the participating documents.
 
 **Base**:
 The common-ancestor document used to distinguish independent changes from conflicts

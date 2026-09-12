@@ -84,6 +84,7 @@ fn check_input_history(cx: &mut TestAppContext, merging: bool, vim: bool) {
             let source = editor.read(cx).document(side).document.text().to_owned();
             assert_eq!(selected.side, side);
 
+            editor.update(cx, |editor, _| editor.preferred_column = Some(17));
             window.press(if vim { "u" } else { "ctrl-z" }, cx);
             assert_eq!(editor.read(cx).right.document.text(), original);
             let after = editor.read(cx).selection.as_ref().unwrap();
@@ -92,6 +93,7 @@ fn check_input_history(cx: &mut TestAppContext, merging: bool, vim: bool) {
                 (side, selected.anchor, selected.head)
             );
             assert!(editor.read(cx).focus.is_focused(window));
+            assert_eq!(editor.read(cx).preferred_column, Some(17));
             window.press("ctrl-c", cx);
             assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), source);
 
@@ -106,6 +108,7 @@ fn check_input_history(cx: &mut TestAppContext, merging: bool, vim: bool) {
                 (side, selected.anchor, selected.head)
             );
             assert_eq!(editor.read(cx).document(side).document.text(), source);
+            assert_eq!(editor.read(cx).preferred_column, Some(17));
         }
     });
 }
@@ -198,5 +201,38 @@ fn another_focus_cannot_borrow_the_comparisons_history(cx: &mut TestAppContext) 
         editor.read(cx).focus.clone().focus(window, cx);
         window.press("ctrl-z", cx);
         assert_eq!(editor.read(cx).right.document.text(), original);
+    });
+}
+
+#[gpui_kit::test]
+fn vim_history_without_a_step_retains_the_input_visual_selection(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx, false);
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.toggle_vim(true, window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.selection = Some(Selection {
+                side: Side::Left,
+                anchor: 0,
+                head: 4,
+            });
+            editor.preferred_column = Some(5);
+            editor.sync_vim_selection(cx);
+
+            for redo in [false, true] {
+                editor.travel_history(redo, window, cx);
+
+                assert_eq!(editor.vim.mode(), yori::vim::Mode::Visual);
+                let selected = editor.selection.as_ref().unwrap();
+                assert_eq!(
+                    (selected.side, selected.anchor, selected.head),
+                    (Side::Left, 0, 4)
+                );
+                assert_eq!(editor.preferred_column, Some(5));
+                assert!(editor.focus.is_focused(window));
+            }
+        });
     });
 }

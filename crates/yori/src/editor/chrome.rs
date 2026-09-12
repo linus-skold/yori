@@ -39,7 +39,7 @@ impl AlignedEditor {
     fn review_navigation(&self) -> ReviewNavigation {
         if let Some(merge) = &self.merge {
             ReviewNavigation {
-                count: merge.conflicts.len(),
+                count: merge.display.conflicts().len(),
                 current: merge.current.map_or(0, |id| id.0 + 1),
                 previous: self.merge_target(true).is_some(),
                 next: self.merge_target(false).is_some(),

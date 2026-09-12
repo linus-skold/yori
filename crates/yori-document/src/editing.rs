@@ -1,6 +1,10 @@
 //! Source-based edit history and navigation for diff and merge editing.
 //! History stores replacement deltas, not full document snapshots or display rows.
 
+mod source;
+
+pub use source::{DocumentEdit, EditUpdate, SourceEdit};
+
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 

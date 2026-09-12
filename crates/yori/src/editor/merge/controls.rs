@@ -24,15 +24,6 @@ pub(super) fn outline_bounds(pane_left: f32, pane_width: f32) -> std::ops::Range
 mod tests;
 
 impl AlignedEditor {
-    pub(in crate::editor) fn merge_header(&self, row: usize) -> Option<ConflictId> {
-        self.merge
-            .as_ref()?
-            .headers
-            .iter()
-            .position(|&header| header == row)
-            .map(ConflictId)
-    }
-
     pub(in crate::editor) fn render_merge_header(
         &self,
         id: ConflictId,
@@ -69,10 +60,11 @@ impl AlignedEditor {
 
         let merge = self.merge.as_ref().expect("merge mode");
         let mut controls = div().absolute().size_full();
-        for (index, rows) in merge.conflicts.iter().enumerate() {
-            let id = ConflictId(index);
-            let top = display_units(merge.headers[index]) * LINE_HEIGHT - self.vertical_scroll;
-            let end = display_units(rows.end) * LINE_HEIGHT - self.vertical_scroll;
+        for conflict in merge.display.conflicts() {
+            let id = conflict.id;
+            let top =
+                display_units(conflict.control_span.start) * LINE_HEIGHT - self.vertical_scroll;
+            let end = display_units(conflict.control_span.end) * LINE_HEIGHT - self.vertical_scroll;
             if end <= 0.0 || top >= geometry.rows_viewport_height() {
                 continue;
             }

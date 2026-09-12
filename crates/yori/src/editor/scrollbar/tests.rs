@@ -153,3 +153,41 @@ fn resize_and_edit_keep_the_track_aligned_and_clamp_short_documents(cx: &mut Tes
         assert!(track.bands(&view.alignment, LINE_HEIGHT).is_empty());
     });
 }
+
+#[gpui_kit::test]
+fn merge_marks_use_projected_spans_not_header_inclusive_controls(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            let source = |text: &str| Document::from_bytes(text.as_bytes().to_vec()).unwrap();
+            let session = yori_diff::merge::MergeSession::new(
+                source("base\nseparator\nold\n"),
+                source("local\nseparator\n"),
+                source("incoming\nseparator\nnew\n"),
+            )
+            .unwrap();
+            *editor = AlignedEditor::from_merge_session(session, window, cx);
+            // A large viewport keeps the expected marker positions in row units.
+            let track = ScrollTrack::new(0, LINE_HEIGHT, 1000.0);
+            let merge = editor.merge.as_ref().unwrap();
+            let marks = merge_scrollbar_marks(merge, track);
+
+            assert_eq!(marks.len(), 2);
+            assert_eq!(marks[0].range, LINE_HEIGHT..2.0 * LINE_HEIGHT);
+            assert_eq!(marks[1].range, 4.0 * LINE_HEIGHT..5.0 * LINE_HEIGHT);
+            assert!(marks[0].current);
+            assert!(!marks[1].current);
+            assert!(marks.iter().all(|mark| !mark.resolved));
+
+            editor.toggle_merge_base(window, cx);
+            editor.merge_mark(yori_diff::merge::ConflictId(0), true, window, cx);
+            let merge = editor.merge.as_ref().unwrap();
+            let marks = merge_scrollbar_marks(merge, track);
+
+            assert_eq!(marks[0].range, 3.0 * LINE_HEIGHT..4.0 * LINE_HEIGHT);
+            assert_eq!(marks[1].range, 6.0 * LINE_HEIGHT..7.0 * LINE_HEIGHT);
+            assert!(marks[0].current && marks[0].resolved);
+            assert!(!marks[1].current && !marks[1].resolved);
+        });
+    });
+}

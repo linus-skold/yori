@@ -24,12 +24,16 @@ impl AlignedEditor {
 
     pub(super) fn locate_caret_change(&mut self) {
         if let Some(selection) = &self.selection {
-            let row = self.row_for_source(selection.side, selection.head);
-            if self.merge.is_some() {
-                self.locate_merge_row(row);
-            } else {
-                self.navigation.locate(row);
-            }
+            self.locate_source_change(selection.side, selection.head);
+        }
+    }
+
+    pub(super) fn locate_source_change(&mut self, side: Side, offset: usize) {
+        let row = self.row_for_source(side, offset);
+        if self.merge.is_some() {
+            self.locate_merge_row(row);
+        } else {
+            self.navigation.locate(row);
         }
     }
 

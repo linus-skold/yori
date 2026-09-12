@@ -1,4 +1,5 @@
 use super::*;
+use yori_document::editing::SourceEdit;
 
 fn doc(text: &str) -> Document {
     Document::from_bytes(text.as_bytes().to_vec()).unwrap()
@@ -294,4 +295,42 @@ fn a_new_status_decision_after_undo_discards_the_old_redo_branch() {
     merge.redo(caret()).unwrap();
     assert_eq!(merge.result().text(), merge.local().text());
     assert!(merge.state(id).unwrap().resolved);
+}
+
+#[test]
+fn source_edit_maintains_conflicts_and_history_without_a_caller_receipt() {
+    let mut merge = conflicted();
+    let id = ConflictId(0);
+    let original = merge.state(id).unwrap().clone();
+
+    merge.editing(caret(), false).replace(0..0, "α").unwrap();
+
+    assert_eq!(
+        merge.state(id).unwrap().result,
+        original.result.start + 2..original.result.end + 2
+    );
+    merge.undo(caret()).unwrap().unwrap();
+    assert_eq!(merge.result().text(), merge.local().text());
+    assert_eq!(merge.state(id), Some(&original));
+}
+
+#[test]
+fn source_group_returning_to_original_text_restores_conflict_ranges() {
+    let mut merge = session(
+        "base one\nseparator\nbase two\n",
+        "local one\nseparator\nlocal two\n",
+        "incoming one\nseparator\nincoming two\n",
+    );
+    let original = merge.result().text().to_owned();
+    let states = merge.states.clone();
+
+    let mut source = merge.editing(caret(), true);
+    source.replace(0..original.len(), "").unwrap();
+    let update = source.replace(0..0, &original).unwrap();
+    assert!(merge.finish_transaction(update.selection));
+    assert!(!merge.finish_transaction(update.selection));
+
+    assert_eq!(merge.result().text(), original);
+    assert_eq!(merge.states, states);
+    assert!(merge.undo(caret()).unwrap().is_none());
 }

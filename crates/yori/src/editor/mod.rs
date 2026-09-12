@@ -4,6 +4,7 @@ use std::{cell::Cell, ops::Range, path::PathBuf, rc::Rc};
 
 mod change_navigation;
 mod chrome;
+mod completion;
 mod connections;
 mod footer;
 mod highlighting;
@@ -333,7 +334,14 @@ impl AlignedEditor {
 
     fn line_for_row(&self, side: Side, row: usize) -> Option<usize> {
         if side == Side::Incoming {
-            return self.merge.as_ref()?.rows.get(row)?.incoming;
+            return self
+                .merge
+                .as_ref()?
+                .display
+                .rows()
+                .get(row)?
+                .sources
+                .incoming;
         }
 
         self.alignment.rows().get(row).and_then(|row| {
@@ -367,9 +375,10 @@ impl AlignedEditor {
         self.merge
             .as_ref()
             .expect("incoming pane")
-            .rows
+            .display
+            .rows()
             .iter()
-            .position(|row| row.incoming == Some(line))
+            .position(|row| row.sources.incoming == Some(line))
             .unwrap_or(self.alignment.rows().len())
     }
 
@@ -397,10 +406,11 @@ impl AlignedEditor {
         self.merge
             .as_ref()
             .expect("incoming pane")
-            .rows
+            .display
+            .rows()
             .iter()
             .skip(row)
-            .find_map(|row| row.incoming)
+            .find_map(|row| row.sources.incoming)
             .map_or(document.text().len(), |line| {
                 document.lines()[line].content.start
             })
@@ -535,7 +545,12 @@ impl AlignedEditor {
             self.vertical_scroll,
             self.horizontal_scroll,
         );
-        if self.is_base_preview_row(hit.row) || self.merge_header(hit.row).is_some() {
+        if self
+            .merge
+            .as_ref()
+            .and_then(|merge| merge.display.rows().get(hit.row))
+            .is_some_and(|row| !matches!(row.kind, merge::RowKind::Aligned))
+        {
             return;
         }
 
@@ -905,13 +920,20 @@ impl AlignedEditor {
 
         for row_index in first_row..end_row {
             let top = geometry.visible_row_top(row_index, first_row, row_offset);
-            if let Some(id) = self.merge_header(row_index) {
-                rows = rows.child(self.render_merge_header(id, top, geometry, cx));
-                continue;
-            }
-            if self.is_base_preview_row(row_index) {
-                rows = rows.child(self.render_base_preview_row(row_index, top, geometry, cx));
-                continue;
+            match self
+                .merge
+                .as_ref()
+                .map(|merge| &merge.display.rows()[row_index].kind)
+            {
+                Some(merge::RowKind::ConflictHeader(id)) => {
+                    rows = rows.child(self.render_merge_header(*id, top, geometry, cx));
+                    continue;
+                }
+                Some(merge::RowKind::Base(base)) => {
+                    rows = rows.child(self.render_base_preview_row(base, top, geometry, cx));
+                    continue;
+                }
+                Some(merge::RowKind::Aligned) | None => {}
             }
 
             // Fine-grained work is viewport-only and shared by both cells.

@@ -1,5 +1,6 @@
 //! Behavioral coverage for the in-memory merge surface, using native input routing.
 
+mod display;
 mod line_taking;
 
 use std::fmt::Write as _;
@@ -56,6 +57,18 @@ fn conflict_menu(window: &mut Window, cx: &mut gpui_kit::App, id: ConflictId, it
 fn assert_synchronized(editor: &AlignedEditor) {
     let merge = editor.merge.as_ref().unwrap();
     assert_eq!(editor.right.document.text(), merge.session.result().text());
+    assert_eq!(
+        editor.right.max_display_columns,
+        crate::editor::max_display_columns(&editor.right.document, crate::editor::TAB_WIDTH)
+    );
+    assert_eq!(
+        editor.right.line_endings,
+        yori::document_info::LineEndings::from_document(&editor.right.document)
+    );
+    if let Some(highlighter) = &editor.right.highlighter {
+        assert_eq!(highlighter.text().to_string(), editor.right.document.text());
+    }
+
     assert_eq!(editor.left.document.text(), merge.session.local().text());
     assert_eq!(
         merge.incoming.document.text(),
@@ -64,7 +77,7 @@ fn assert_synchronized(editor: &AlignedEditor) {
 
     for side in [Side::Left, Side::Right, Side::Incoming] {
         let document = &editor.document(side).document;
-        let text: String = (0..merge.rows.len())
+        let text: String = (0..merge.display.rows().len())
             .filter_map(|row| editor.line_for_row(side, row))
             .map(|line| document.copy_range(document.lines()[line].full.clone()))
             .collect();
@@ -206,8 +219,16 @@ fn base_expansion_and_three_pane_hit_testing_preserve_source_identity(cx: &mut T
     cx.update(|window, cx| {
         editor.update(cx, |editor, cx| {
             editor.toggle_merge_base(window, cx);
-            let preview = editor.merge.as_ref().unwrap().base_preview.clone().unwrap();
-            assert!(preview.0.clone().all(|row| {
+            let display = &editor.merge.as_ref().unwrap().display;
+            let base_rows: Vec<_> = display
+                .rows()
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| matches!(row.kind, RowKind::Base(_)))
+                .map(|(index, _)| index)
+                .collect();
+            assert!(!base_rows.is_empty());
+            assert!(base_rows.iter().all(|&row| {
                 [Side::Left, Side::Right, Side::Incoming]
                     .iter()
                     .all(|side| editor.line_for_row(*side, row).is_none())
@@ -604,5 +625,229 @@ fn vim_changes_and_status_only_undo_use_the_same_merge_history(cx: &mut TestAppC
         window.press("u", cx);
         assert_eq!(editor.read(cx).right.document.text(), original);
         assert_synchronized(editor.read(cx));
+    });
+}
+
+#[gpui_kit::test]
+fn unmark_during_insert_preserves_merge_grouping(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.toggle_vim(true, window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let original = editor.read(cx).right.document.text().to_owned();
+        window.press("i", cx);
+        editor.update(cx, |editor, cx| {
+            editor.replace_and_mark_text_in_range(None, "é", None, window, cx);
+            editor.unmark_text(window, cx);
+        });
+        let composed = editor.read(cx).right.document.text().to_owned();
+        window.press("x", cx);
+        window.press("escape", cx);
+        let typed = editor.read(cx).right.document.text().to_owned();
+
+        window.press("u", cx);
+        assert_eq!(editor.read(cx).right.document.text(), composed);
+        window.press("u", cx);
+        assert_eq!(editor.read(cx).right.document.text(), original);
+
+        window.press("ctrl-r", cx);
+        assert_eq!(editor.read(cx).right.document.text(), composed);
+        window.press("ctrl-r", cx);
+        assert_eq!(editor.read(cx).right.document.text(), typed);
+    });
+}
+
+#[gpui_kit::test]
+fn retiring_a_net_zero_composition_restores_conflict_gutter_positions(cx: &mut TestAppContext) {
+    for retirement in ["unmark", "escape", "reposition", "cancel"] {
+        let source = |text: &str| Document::from_bytes(text.as_bytes().to_vec()).unwrap();
+        let session = MergeSession::new(
+            source("base one\nseparator\nbase two\n"),
+            source("local one\nseparator\nlocal two\n"),
+            source("incoming one\nseparator\nincoming two\n"),
+        )
+        .unwrap();
+        let (editor, view) = harness_with(cx, Some(session));
+        view.update(|window, cx| {
+            editor.update(cx, |editor, cx| editor.toggle_vim(true, window, cx));
+        });
+        view.run_until_parked();
+        view.update(|window, cx| {
+            window.press("i", cx);
+            editor.update(cx, |editor, cx| {
+                let original = editor.right.document.text().to_owned();
+                let conflicts = editor.merge.as_ref().unwrap().display.conflicts().to_vec();
+                editor.replace_and_mark_text_in_range(
+                    Some(0..original.len()),
+                    "",
+                    None,
+                    window,
+                    cx,
+                );
+                editor.replace_and_mark_text_in_range(None, &original, None, window, cx);
+
+                match retirement {
+                    "unmark" => editor.unmark_text(window, cx),
+                    "escape" => editor.vim_key(
+                        &gpui_kit::KeyDownEvent {
+                            keystroke: gpui_kit::Keystroke::parse("escape").unwrap(),
+                            is_held: false,
+                            prefer_character_input: false,
+                        },
+                        window,
+                        cx,
+                    ),
+                    "reposition" => editor.reposition_vim(),
+                    "cancel" => editor.cancel_vim(),
+                    _ => unreachable!(),
+                }
+
+                let merge = editor.merge.as_ref().unwrap();
+                assert_eq!(editor.right.document.text(), original);
+                assert_eq!(merge.session.state(ConflictId(1)).unwrap().result, 20..30);
+                assert_eq!(
+                    merge.display.conflicts(),
+                    conflicts,
+                    "{retirement}: conflict controls and gutter ranges must return to owner truth"
+                );
+                assert!(!editor.is_dirty());
+                assert_synchronized(editor);
+            });
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn deleting_a_conflict_keeps_its_explicit_identity_with_expanded_base(cx: &mut TestAppContext) {
+    let source = |text: &str| Document::from_bytes(text.as_bytes().to_vec()).unwrap();
+    let session = MergeSession::new(
+        source("base one\nseparator\nbase two\n"),
+        source("local one\nseparator\nlocal two\n"),
+        source("separator\nincoming two\n"),
+    )
+    .unwrap();
+    let (editor, cx) = harness_with(cx, Some(session));
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.navigate_merge(false, window, cx);
+            editor.toggle_merge_base(window, cx);
+            assert_eq!(editor.merge.as_ref().unwrap().current, Some(ConflictId(1)));
+
+            editor.merge_take(ConflictId(0), Take::Incoming, window, cx);
+
+            let merge = editor.merge.as_ref().unwrap();
+            assert_eq!(merge.current, Some(ConflictId(0)));
+            assert_eq!(merge.session.state(ConflictId(0)).unwrap().result, 0..0);
+            assert!(merge.session.state(ConflictId(0)).unwrap().resolved);
+            assert!(!merge.session.state(ConflictId(1)).unwrap().resolved);
+            let caption = merge.display.conflicts()[0].base_caption.unwrap();
+            assert_eq!(
+                merge.display.rows()[caption].kind,
+                RowKind::Base(BaseRow::Caption)
+            );
+            assert_eq!(
+                merge.display.rows()[caption + 1].kind,
+                RowKind::Base(BaseRow::SourceLine(0))
+            );
+            assert_eq!(editor.right.document.text(), "separator\nlocal two\n");
+            let caret = editor.right_selection().unwrap();
+            assert_eq!(caret, TextSelection::caret(0));
+            let y = display_units(editor.row_for_source(Side::Right, caret.head)) * LINE_HEIGHT;
+            assert!(y >= editor.vertical_scroll);
+            assert!(
+                y + LINE_HEIGHT
+                    <= editor.vertical_scroll + editor.geometry().rows_viewport_height()
+            );
+            assert!(editor.focus.is_focused(window));
+            assert_synchronized(editor);
+        });
+    });
+}
+
+#[gpui_kit::test]
+fn status_only_history_retains_input_placement_and_does_not_reveal_result(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            let original = editor.current_checkpoint();
+            editor.merge_mark(ConflictId(0), true, window, cx);
+            editor.selection = Some(Selection {
+                side: Side::Incoming,
+                anchor: 9,
+                head: 2,
+            });
+            editor.preferred_column = Some(17);
+            editor.vertical_scroll = 22.0;
+            editor.horizontal_scroll = 7.0;
+
+            editor.travel_history(false, window, cx);
+
+            let selected = editor.selection.as_ref().unwrap();
+            assert_eq!(
+                (selected.side, selected.anchor, selected.head),
+                (Side::Incoming, 9, 2)
+            );
+            assert_eq!(editor.preferred_column, Some(17));
+            assert_eq!(
+                (editor.vertical_scroll, editor.horizontal_scroll),
+                (22.0, 7.0)
+            );
+            assert!(editor.focus.is_focused(window));
+            assert!(editor.current_checkpoint() == original);
+            assert_synchronized(editor);
+
+            editor.travel_history(true, window, cx);
+
+            assert_eq!(editor.selection.as_ref().unwrap().side, Side::Incoming);
+            assert_eq!(editor.preferred_column, Some(17));
+            assert_eq!(
+                (editor.vertical_scroll, editor.horizontal_scroll),
+                (22.0, 7.0)
+            );
+            assert_eq!(editor.right.document.text(), original.text);
+            assert_eq!(editor.unresolved_count(), 2);
+        });
+    });
+}
+
+#[gpui_kit::test]
+fn utf16_composition_completes_source_syntax_metadata_and_checkpoint_together(
+    cx: &mut TestAppContext,
+) {
+    let source = |text: &str| Document::from_bytes(text.as_bytes().to_vec()).unwrap();
+    let session = MergeSession::new(
+        source("base\r\n"),
+        source("a😀z\r\n"),
+        source("incoming\r\n"),
+    )
+    .unwrap();
+    let (editor, cx) = harness_with(cx, Some(session));
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.replace_and_mark_text_in_range(Some(1..3), "界😀", Some(1..3), window, cx);
+
+            assert_eq!(editor.right.document.text(), "a界😀z\r\n");
+            assert_eq!(
+                editor.selected_text_range(false, window, cx).unwrap().range,
+                2..4
+            );
+            assert_eq!(editor.marked_text_range(window, cx), Some(1..4));
+            assert_eq!(editor.current_checkpoint().text, "a界😀z\r\n");
+            assert_synchronized(editor);
+
+            editor.replace_text_in_range(None, "é", window, cx);
+            editor.unmark_text(window, cx);
+
+            assert_eq!(editor.right.document.text(), "aéz\r\n");
+            assert_eq!(editor.current_checkpoint().text, "aéz\r\n");
+            assert_synchronized(editor);
+
+            editor.travel_history(false, window, cx);
+            assert_eq!(editor.right.document.text(), "a😀z\r\n");
+            assert!(!editor.is_dirty());
+            assert_synchronized(editor);
+        });
     });
 }

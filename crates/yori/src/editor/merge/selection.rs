@@ -13,7 +13,7 @@ use yori_diff::{SelectionRestore, merge::MergeInput};
 use yori_document::{Document, editing::TextSelection};
 
 use super::{AlignedEditor, LINE_HEIGHT, controls::outline_bounds};
-use crate::editor::{RESTORE_WIDTH, Side};
+use crate::editor::{RESTORE_WIDTH, Side, completion::Placement};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LineTake {
@@ -77,6 +77,7 @@ impl AlignedEditor {
         let selection = self
             .right_selection()
             .unwrap_or(TextSelection::caret(expected.plan.local.start));
+        let anchor = self.view_anchor();
         let update = self.merge.as_mut().expect("merge mode").session.take_lines(
             expected.input,
             selection,
@@ -84,14 +85,13 @@ impl AlignedEditor {
         );
 
         match update {
-            Ok(update) => self.apply_merge_update(update, window, cx),
+            Ok(update) => self.complete_edit(anchor, update, Placement::Transfer, window, cx),
             Err(error) => {
                 eprintln!("selected-line merge take rejected: {error}");
                 window.play_system_bell();
+                self.focus.focus(window, cx);
             }
         }
-
-        self.focus.focus(window, cx);
     }
 
     pub(super) fn render_merge_line_controls(

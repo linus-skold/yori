@@ -1,4 +1,5 @@
 use super::*;
+use yori_document::editing::EditHistory;
 
 struct Editor {
     vim: Vim,
@@ -26,25 +27,21 @@ impl Editor {
             .vim
             .handle(
                 key,
-                &mut self.document,
-                &mut self.history,
+                if self.writable {
+                    EditTarget::Document(&mut self.document, &mut self.history)
+                } else {
+                    EditTarget::ReadOnly(&self.document)
+                },
                 self.selection,
                 &mut self.register,
-                self.writable,
             )
             .unwrap();
 
         self.selection = outcome.selection;
         if !outcome.consumed {
-            // The production Insert path uses this same document/history machinery.
-            let edit = self
-                .history
-                .replace(
-                    &mut self.document,
-                    self.selection,
-                    self.selection.range(),
-                    key,
-                )
+            // Native typing uses the same constrained source target.
+            let edit = EditTarget::Document(&mut self.document, &mut self.history)
+                .replace(self.selection, self.selection.range(), key, true)
                 .unwrap();
             self.selection = edit.selection;
         }
@@ -209,17 +206,19 @@ fn read_only_pane_allows_navigation_and_yank_but_no_mutation() {
 fn cancelling_pending_commands_and_disabling_insert_preserves_history() {
     let mut editor = Editor::new("abc\n");
     editor.key("d");
-    editor
-        .vim
-        .cancel(&editor.document, &mut editor.history, editor.selection);
+    editor.vim.cancel(
+        EditTarget::Document(&mut editor.document, &mut editor.history),
+        editor.selection,
+    );
     editor.key("w");
     assert_eq!(editor.text(), "abc\n");
 
     editor.key("i");
     editor.key("X");
-    editor
-        .vim
-        .cancel(&editor.document, &mut editor.history, editor.selection);
+    editor.vim.cancel(
+        EditTarget::Document(&mut editor.document, &mut editor.history),
+        editor.selection,
+    );
     let edit = editor
         .history
         .replace(
@@ -246,15 +245,13 @@ fn mouse_selection_and_insert_repositioning_use_existing_history() {
 
     editor.key("c");
     editor.key("X");
-    editor
-        .vim
-        .reposition(&editor.document, &mut editor.history, editor.selection);
+    editor.vim.reposition(
+        EditTarget::Document(&mut editor.document, &mut editor.history),
+        editor.selection,
+    );
     assert_eq!(editor.vim.mode(), Mode::Insert);
 
     editor.selection = TextSelection::caret(0);
-    editor
-        .history
-        .begin_transaction(&editor.document, editor.selection);
     editor.key("Y");
     editor.key("escape");
     assert_eq!(editor.text(), "YX def\n");
@@ -324,15 +321,12 @@ fn native_composition_and_typing_commit_as_one_modal_transaction() {
             .history
             .marked_range()
             .unwrap_or(editor.selection.range());
-        let edit = editor
-            .history
-            .replace_marked(&mut editor.document, editor.selection, range, text, None)
+        let edit = EditTarget::Document(&mut editor.document, &mut editor.history)
+            .replace_marked(editor.selection, range, text, None, true)
             .unwrap();
         editor.selection = edit.selection;
     }
-    editor
-        .history
-        .finish_composition(&editor.document, editor.selection);
+    EditTarget::Document(&mut editor.document, &mut editor.history).unmark(editor.selection);
     editor.key("!");
     editor.key("escape");
     assert_eq!(editor.text(), "e\u{301}!\r\n");
@@ -353,4 +347,131 @@ fn unknown_commands_do_not_insert_text_or_execute_a_partial_operator() {
 
     editor.keys("gqi");
     assert_eq!(editor.vim.mode(), Mode::Insert);
+}
+
+#[test]
+fn merge_vim_groups_changes_and_open_lines_without_consuming_status_history() {
+    use yori_diff::merge::{ConflictId, MergeSession};
+
+    for command in ["ciw", "o", "O"] {
+        let doc = |text: &str| Document::from_bytes(text.as_bytes().to_vec()).unwrap();
+        let mut merge =
+            MergeSession::new(doc("base\r\n"), doc("old\r\n"), doc("incoming\r\n")).unwrap();
+        let mut vim = Vim::default();
+        let mut register = Register::default();
+        let mut selection = TextSelection::caret(0);
+        merge.set_resolved(ConflictId(0), true, selection).unwrap();
+
+        for key in command.chars() {
+            selection = vim
+                .handle(
+                    &key.to_string(),
+                    EditTarget::Merge(&mut merge),
+                    selection,
+                    &mut register,
+                )
+                .unwrap()
+                .selection;
+        }
+        assert_eq!(vim.mode(), Mode::Insert);
+        selection = EditTarget::Merge(&mut merge)
+            .replace_marked(selection, selection.range(), "é", None, true)
+            .unwrap()
+            .selection;
+        let marked = merge.marked_range().unwrap();
+        selection = EditTarget::Merge(&mut merge)
+            .replace(selection, marked, "界", true)
+            .unwrap()
+            .selection;
+        selection = EditTarget::Merge(&mut merge)
+            .replace(selection, selection.range(), "!", true)
+            .unwrap()
+            .selection;
+        selection = vim
+            .handle(
+                "escape",
+                EditTarget::Merge(&mut merge),
+                selection,
+                &mut register,
+            )
+            .unwrap()
+            .selection;
+        let edited = merge.result().text().to_owned();
+
+        selection = vim
+            .handle("u", EditTarget::Merge(&mut merge), selection, &mut register)
+            .unwrap()
+            .selection;
+        assert_eq!(merge.result().text(), "old\r\n", "{command}");
+        assert!(merge.state(ConflictId(0)).unwrap().resolved);
+
+        let status = vim
+            .handle("u", EditTarget::Merge(&mut merge), selection, &mut register)
+            .unwrap();
+        assert!(status.edit.is_none());
+        assert!(!merge.state(ConflictId(0)).unwrap().resolved);
+        assert_eq!(merge.result().text(), "old\r\n");
+
+        selection = vim
+            .handle(
+                "ctrl-r",
+                EditTarget::Merge(&mut merge),
+                status.selection,
+                &mut register,
+            )
+            .unwrap()
+            .selection;
+        vim.handle(
+            "ctrl-r",
+            EditTarget::Merge(&mut merge),
+            selection,
+            &mut register,
+        )
+        .unwrap();
+        assert_eq!(merge.result().text(), edited);
+        assert!(merge.state(ConflictId(0)).unwrap().resolved);
+    }
+}
+
+#[test]
+fn merge_vim_reposition_and_cancel_commit_separate_typing_runs() {
+    use yori_diff::merge::MergeSession;
+
+    let doc = |text: &str| Document::from_bytes(text.as_bytes().to_vec()).unwrap();
+    let mut merge = MergeSession::new(doc("base\n"), doc("old\n"), doc("incoming\n")).unwrap();
+    let mut vim = Vim::default();
+    let mut register = Register::default();
+    let mut selection = TextSelection::caret(0);
+
+    for key in ["c", "i", "w"] {
+        selection = vim
+            .handle(key, EditTarget::Merge(&mut merge), selection, &mut register)
+            .unwrap()
+            .selection;
+    }
+    selection = EditTarget::Merge(&mut merge)
+        .replace(selection, selection.range(), "X", true)
+        .unwrap()
+        .selection;
+    vim.reposition(EditTarget::Merge(&mut merge), selection);
+    assert_eq!(vim.mode(), Mode::Insert);
+
+    selection = TextSelection::caret(0);
+    selection = EditTarget::Merge(&mut merge)
+        .replace(selection, selection.range(), "Y", true)
+        .unwrap()
+        .selection;
+    vim.cancel(EditTarget::Merge(&mut merge), selection);
+    assert_eq!(merge.result().text(), "YX\n");
+
+    selection = vim
+        .handle("u", EditTarget::Merge(&mut merge), selection, &mut register)
+        .unwrap()
+        .selection;
+    assert_eq!(merge.result().text(), "X\n");
+
+    vim.handle("u", EditTarget::Merge(&mut merge), selection, &mut register)
+        .unwrap();
+    assert_eq!(merge.result().text(), "old\n");
+    assert!(merge.undo(selection).unwrap().is_none());
 }

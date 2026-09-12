@@ -2,11 +2,14 @@
 //! are separate from editable result ranges and explicit resolution decisions.
 
 mod alignment;
+mod editing;
 mod history;
 mod selection;
 
 pub use alignment::{MergeAlignment, MergeRow};
+pub use editing::MergeResultEdit;
 pub use selection::MergeInput;
+pub use yori_document::editing::EditUpdate as MergeUpdate;
 #[cfg(test)]
 mod tests;
 
@@ -15,7 +18,7 @@ use std::{fmt, ops::Range};
 use similar::{MergeResolution, TextMerge};
 use yori_document::{
     Document, InputError,
-    editing::{EditHistory, EditOutcome, TextSelection},
+    editing::{EditHistory, EditOutcome, SourceEdit, TextSelection},
 };
 
 use history::{MergeHistory, State};
@@ -70,13 +73,6 @@ impl From<InputError> for MergeError {
     fn from(error: InputError) -> Self {
         Self::Document(error)
     }
-}
-
-#[derive(Debug)]
-pub struct MergeUpdate {
-    pub selection: TextSelection,
-    /// Status-only actions do not fabricate a document edit.
-    pub edit: Option<EditOutcome>,
 }
 
 pub struct MergeSession {
@@ -181,43 +177,12 @@ impl MergeSession {
         self.edits.begin_transaction(&self.result, selection);
     }
 
-    pub fn finish_transaction(&mut self, selection: TextSelection) {
+    /// Returns whether retiring a net-zero group restored conflict ranges.
+    /// This is a presentation change, not a text edit or a new history step.
+    pub fn finish_transaction(&mut self, selection: TextSelection) -> bool {
         self.edits.finish_transaction(&self.result, selection);
         self.history
-            .finish(&self.result, &mut self.states, selection);
-    }
-
-    /// Apply an existing editor command while retaining merge metadata/history.
-    /// Callers group compositions with `begin_transaction` / `finish_transaction`; history navigation
-    /// must use this session's undo/redo, not the raw text history inside the command.
-    pub fn edit_with<T>(
-        &mut self,
-        selection: TextSelection,
-        command: impl FnOnce(
-            &mut Document,
-            &mut EditHistory,
-        ) -> Result<(T, Option<EditOutcome>), InputError>,
-    ) -> Result<(T, MergeUpdate), MergeError> {
-        let original = self.result.text().to_owned();
-        let before = State::new(&self.states, selection);
-        let (value, edit) = command(&mut self.result, &mut self.edits)?;
-        let changed = original != self.result.text();
-        let selection = edit.as_ref().map_or(selection, |edit| edit.selection);
-
-        if changed && let Some(edit) = &edit {
-            let owner = self.edit_owner(&edit.replaced);
-            remap(&mut self.states, edit, owner);
-        }
-        self.history
-            .record(before, State::new(&self.states, selection), changed);
-
-        Ok((
-            value,
-            MergeUpdate {
-                selection,
-                edit: edit.filter(|_| changed),
-            },
-        ))
+            .finish(&self.result, &mut self.states, selection)
     }
 
     #[must_use]
@@ -234,7 +199,7 @@ impl MergeSession {
         range: Range<usize>,
         text: &str,
     ) -> Result<MergeUpdate, MergeError> {
-        self.replace_inner(selection, range, text, None)
+        Ok(self.editing(selection, false).replace(range, text)?)
     }
 
     pub fn take(

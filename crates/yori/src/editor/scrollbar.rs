@@ -10,6 +10,7 @@ use gpui_kit::{
 };
 use yori::scrollbar::{OverviewBand, ScrollTrack};
 
+use super::merge::MergeState;
 use super::{AlignedEditor, HEADER_HEIGHT, LINE_HEIGHT};
 use crate::appearance;
 
@@ -72,38 +73,23 @@ impl AlignedEditor {
         } else {
             Vec::new()
         };
-        let merge_bands: Vec<_> = self
+        let merge_marks = self
             .merge
-            .iter()
-            .flat_map(|merge| {
-                merge.session.conflicts().iter().map(|conflict| {
-                    let color = if merge
-                        .session
-                        .state(conflict.id)
-                        .expect("known conflict")
-                        .resolved
-                    {
-                        cx.theme().muted_foreground
-                    } else {
-                        cx.theme().warning
-                    };
-                    (
-                        track.marker(merge.conflicts[conflict.id.0].clone(), LINE_HEIGHT),
-                        color,
-                    )
-                })
-            })
-            .collect();
-        let current = if let Some(merge) = &self.merge {
-            merge
-                .current
-                .map(|id| track.marker(merge.conflicts[id.0].clone(), LINE_HEIGHT))
+            .as_ref()
+            .map_or_else(Vec::new, |merge| merge_scrollbar_marks(merge, track));
+        let current = if self.merge.is_some() {
+            merge_marks
+                .iter()
+                .find(|mark| mark.current)
+                .map(|mark| mark.range.clone())
         } else {
             self.navigation
                 .current(&self.alignment)
                 .map(|index| track.marker(self.alignment.blocks()[index].rows.clone(), LINE_HEIGHT))
         };
         let foreground = cx.theme().foreground;
+        let resolved_color = cx.theme().muted_foreground;
+        let unresolved_color = cx.theme().warning;
         let thumb_color = foreground.opacity(if self.scrollbar_grab.is_some() {
             0.24
         } else {
@@ -131,8 +117,13 @@ impl AlignedEditor {
                     move |bounds, (), window, _| {
                         paint_rect(bounds, 1.0..WIDTH - 1.0, thumb.clone(), thumb_color, window);
                         paint_markers(bounds, &bands, current.clone(), foreground, window);
-                        for (rows, color) in &merge_bands {
-                            paint_rect(bounds, 6.0..14.0, rows.clone(), *color, window);
+                        for mark in &merge_marks {
+                            let color = if mark.resolved {
+                                resolved_color
+                            } else {
+                                unresolved_color
+                            };
+                            paint_rect(bounds, 6.0..14.0, mark.range.clone(), color, window);
                         }
 
                         capture_drag(editor.clone(), window);
@@ -142,6 +133,29 @@ impl AlignedEditor {
                 .size_full(),
             )
     }
+}
+
+struct MergeScrollbarMark {
+    range: Range<f32>,
+    resolved: bool,
+    current: bool,
+}
+
+fn merge_scrollbar_marks(merge: &MergeState, track: ScrollTrack) -> Vec<MergeScrollbarMark> {
+    merge
+        .display
+        .conflicts()
+        .iter()
+        .map(|conflict| MergeScrollbarMark {
+            range: track.marker(conflict.source_span.clone(), LINE_HEIGHT),
+            resolved: merge
+                .session
+                .state(conflict.id)
+                .expect("known conflict")
+                .resolved,
+            current: merge.current == Some(conflict.id),
+        })
+        .collect()
 }
 
 fn paint_rect(

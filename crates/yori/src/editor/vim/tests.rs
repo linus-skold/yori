@@ -1,13 +1,20 @@
 //! Behavioral routing tests: real GPUI key dispatch, native typing, and history.
 
 use super::*;
-use crate::editor::PaneDocument;
+use crate::editor::{EntityInputHandler, PaneDocument};
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, Entity, TestAppContext, VisualTestContext};
 use yori_document::Document;
 
 fn harness(cx: &mut TestAppContext) -> (Entity<AlignedEditor>, &mut VisualTestContext) {
+    harness_with(cx, "let old = 1;\n")
+}
+
+fn harness_with<'a>(
+    cx: &'a mut TestAppContext,
+    text: &str,
+) -> (Entity<AlignedEditor>, &'a mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         crate::appearance::init(cx);
@@ -22,8 +29,7 @@ fn harness(cx: &mut TestAppContext) -> (Entity<AlignedEditor>, &mut VisualTestCo
                 Document::from_bytes(text.as_bytes().to_vec()).unwrap(),
             )
         };
-        let view =
-            cx.new(|cx| AlignedEditor::new(pane("baseline\n"), pane("let old = 1;\n"), window, cx));
+        let view = cx.new(|cx| AlignedEditor::new(pane("baseline\n"), pane(text), window, cx));
         editor = Some(view.clone());
 
         Root::new(view, window, cx)
@@ -125,5 +131,84 @@ fn baseline_is_navigable_and_copyable_but_cannot_enter_insert(cx: &mut TestAppCo
         assert_eq!(editor.read(cx).right.document.text(), "let old = 1;\n");
         assert_eq!(editor.read(cx).vim.mode(), Mode::Normal);
         assert_eq!(editor.read(cx).selection.as_ref().unwrap().side, Side::Left);
+    });
+}
+
+#[gpui_kit::test]
+fn unmark_during_insert_preserves_document_grouping(cx: &mut TestAppContext) {
+    let (editor, cx) = harness(cx);
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.toggle_vim(true, window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let original = editor.read(cx).right.document.text().to_owned();
+        window.press("i", cx);
+        editor.update(cx, |editor, cx| {
+            editor.replace_and_mark_text_in_range(None, "é", None, window, cx);
+            editor.unmark_text(window, cx);
+        });
+        let composed = editor.read(cx).right.document.text().to_owned();
+        window.press("x", cx);
+        window.press("escape", cx);
+        let typed = editor.read(cx).right.document.text().to_owned();
+
+        window.press("u", cx);
+        assert_ne!(composed, original);
+        assert_eq!(editor.read(cx).right.document.text(), original);
+
+        window.press("ctrl-r", cx);
+        assert_eq!(editor.read(cx).right.document.text(), typed);
+    });
+}
+
+#[gpui_kit::test]
+fn vim_paste_reveals_only_its_final_cursor(cx: &mut TestAppContext) {
+    let text = "source line\n".repeat(600);
+    let (editor, cx) = harness_with(cx, &text);
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.toggle_vim(true, window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        for key in ["4", "0", "0", "y", "y", "j", "j"] {
+            window.press(key, cx);
+        }
+        assert!(editor.read(cx).vertical_scroll.abs() < f32::EPSILON);
+
+        window.press("p", cx);
+
+        let editor = editor.read(cx);
+        assert_eq!(editor.right.document.text(), "source line\n".repeat(1000));
+        assert_eq!(
+            editor.right_selection().unwrap().head,
+            "source line\n".len() * 3
+        );
+        assert!(
+            editor.vertical_scroll.abs() < f32::EPSILON,
+            "the final cursor was already visible"
+        );
+        assert!(editor.is_dirty());
+    });
+}
+
+#[gpui_kit::test]
+fn right_history_retains_its_existing_normal_mode_with_a_restored_selection(
+    cx: &mut TestAppContext,
+) {
+    let (editor, cx) = harness(cx);
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| editor.toggle_vim(true, window, cx));
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        for key in ["v", "l", "d", "u"] {
+            window.press(key, cx);
+        }
+
+        let editor = editor.read(cx);
+        assert_eq!(editor.right.document.text(), "let old = 1;\n");
+        assert_eq!(editor.right_selection().unwrap().range(), 0..2);
+        assert_eq!(editor.vim.mode(), Mode::Normal);
     });
 }

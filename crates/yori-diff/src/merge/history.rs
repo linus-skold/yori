@@ -60,17 +60,19 @@ impl MergeHistory {
         document: &Document,
         states: &mut Vec<ConflictState>,
         selection: TextSelection,
-    ) {
+    ) -> bool {
         let Some(transaction) = self.transaction.take() else {
-            return;
+            return false;
         };
 
         if transaction.original == document.text() {
+            let changed = *states != transaction.before.conflicts;
             *states = transaction.before.conflicts;
-            return;
+            return changed;
         }
 
         self.record(transaction.before, State::new(states, selection), true);
+        false
     }
 
     pub fn record(&mut self, before: State, after: State, text_changed: bool) {
