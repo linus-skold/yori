@@ -194,7 +194,15 @@ impl AlignedEditor {
             if !matches!(placement, Placement::Conflict(_)) {
                 self.locate_source_change(side, update.selection.head);
             }
-            self.reveal_source(side, offset, window, cx);
+
+            let history_conflict = matches!(placement, Placement::History)
+                .then(|| self.merge.as_ref().and_then(|merge| merge.current))
+                .flatten();
+            if let Some(id) = history_conflict {
+                self.reveal_merge_conflict(id);
+            } else {
+                self.reveal_source(side, offset, window, cx);
+            }
         }
 
         if matches!(placement, Placement::Transfer | Placement::Conflict(_)) {

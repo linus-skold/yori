@@ -149,7 +149,8 @@ impl AlignedEditor {
     ) {
         self.cancel_vim();
         self.finish_composition();
-        let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
+
+        let selection = self.conflict_action_selection(id);
         let anchor = self.view_anchor();
         let merge = self.merge.as_mut().expect("merge mode");
         let update = merge.session.take(id, take, selection);
@@ -165,12 +166,23 @@ impl AlignedEditor {
     ) {
         self.cancel_vim();
         self.finish_composition();
-        let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
+
+        let selection = self.conflict_action_selection(id);
         let anchor = self.view_anchor();
         let merge = self.merge.as_mut().expect("merge mode");
         let update = merge.session.reset(id, selection);
 
         self.finish_merge_action(anchor, id, update, window, cx);
+    }
+
+    fn conflict_action_selection(&self, id: ConflictId) -> TextSelection {
+        self.merge
+            .as_ref()
+            .and_then(|merge| merge.session.state(id))
+            .map_or_else(
+                || self.right_selection().unwrap_or(TextSelection::caret(0)),
+                |state| TextSelection::caret(state.result.start),
+            )
     }
 
     fn finish_merge_action(
@@ -253,14 +265,18 @@ impl AlignedEditor {
         });
         self.refresh_merge_projection();
 
-        let row = self.merge.as_ref().expect("merge mode").display.conflicts()[id.0].header_row;
-        self.vertical_scroll = self
-            .geometry()
-            .change_scroll_top(row, self.alignment.rows().len());
+        self.reveal_merge_conflict(id);
         self.horizontal_scroll = 0.0;
 
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    pub(super) fn reveal_merge_conflict(&mut self, id: ConflictId) {
+        let row = self.merge.as_ref().expect("merge mode").display.conflicts()[id.0].header_row;
+        self.vertical_scroll = self
+            .geometry()
+            .change_scroll_top(row, self.alignment.rows().len());
     }
 
     pub(super) fn locate_merge_row(&mut self, row: usize) {
