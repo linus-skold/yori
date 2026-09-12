@@ -12,6 +12,10 @@ fn harness(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContex
         crate::appearance::init(cx);
         crate::editor::init(cx);
         super::init(cx);
+
+        // Dialog entrance animations use wall-clock time, not GPUI's test clock.
+        // Keep pointer targets stationary between simulated input frames.
+        cx.set_reduce_motion(true);
     });
     let mut workspace = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
@@ -230,6 +234,62 @@ fn vim_preference_is_shared_but_typing_history_and_pending_commands_are_tab_loca
         window.press("u", cx);
         assert_eq!(copy_active_text(window, cx), "local\n");
     });
+}
+
+#[gpui_kit::test]
+fn discard_click_survives_a_slow_input_frame(cx: &mut TestAppContext) {
+    use gpui_kit::{InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+
+    let (workspace, cx) = harness(cx);
+    cx.update(|window, cx| {
+        let width = window.find("rows-viewport").bounds().size.width;
+        window.click_at("rows-viewport", point(width * 0.75, px(11.0)), cx);
+        window.input("X", cx);
+        window.press("ctrl-w", cx);
+        window.render_frame(cx);
+        let position = window.find("ok").bounds().center();
+
+        // Deliberately stall AFTER choosing the pointer position. This models
+        // descheduling under parallel test load, not a wait for UI readiness.
+        // Without reduced motion, the entrance animation moves Discard away
+        // from this position and the native click leaves the dirty tab open.
+        std::thread::sleep(*gpui_kit::component::dialog::ANIMATION_DURATION);
+        window.render_frame(cx);
+
+        window.dispatch_event(
+            MouseMoveEvent {
+                position,
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        window.dispatch_event(
+            MouseDownEvent {
+                position,
+                button: MouseButton::Left,
+                click_count: 1,
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        window.dispatch_event(
+            MouseUpEvent {
+                position,
+                button: MouseButton::Left,
+                click_count: 1,
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    cx.update(|_, cx| assert!(workspace.read(cx).tabs.entries.is_empty()));
 }
 
 #[gpui_kit::test]
