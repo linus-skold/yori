@@ -1,16 +1,13 @@
 //! Saving, external-change notices, and explicit reload policy for workspace tabs.
 
+use super::decision_dialog::{Decision, DecisionDialog, DecisionShortcut};
 use super::files::{Files, Role};
 use super::{OpenTab, Save, Workspace};
 use crate::comparison::ComparisonPaths;
 use crate::editor::{AlignedEditor, DirtyChanged};
 use crate::storage::{FileWatch, SaveError, Snapshot};
-use gpui_kit::component::{
-    WindowExt,
-    button::{Button, ButtonVariants},
-    dialog::{Cancel, Confirm, DialogFooter},
-};
-use gpui_kit::{AppContext, Context, ParentElement, Task, Window};
+use gpui_kit::component::WindowExt;
+use gpui_kit::{AppContext, Context, Task, Window};
 use std::{
     collections::{HashSet, VecDeque},
     rc::Rc,
@@ -332,37 +329,17 @@ impl Workspace {
     ) {
         let action = Rc::new(action);
         let view = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let action = Rc::clone(&action);
-            let view = view.clone();
-            let footer = DialogFooter::new()
-                .child(
-                    Button::new("cancel")
-                        .label("Cancel")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(Cancel), cx);
-                        }),
-                )
-                .child(
-                    Button::new("ok")
-                        .label(accept)
-                        .primary()
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
-                        }),
-                );
+        let accept = Decision::new("ok", accept, DecisionShortcut::Enter)
+            .primary()
+            .on_activate(move |window, cx| {
+                let action = Rc::clone(&action);
+                let _ = view.update(cx, |this, cx| action(this, window, cx));
+            });
+        let cancel = Decision::new("cancel", "Cancel", DecisionShortcut::Escape);
 
-            dialog
-                .title(title)
-                .child(detail.clone())
-                .overlay_closable(false)
-                .footer(footer)
-                .on_ok(move |_, window, cx| {
-                    window.close_dialog(cx);
-                    let _ = view.update(cx, |this, cx| action(this, window, cx));
-                    false
-                })
-        });
+        DecisionDialog::new(title, detail, cancel)
+            .primary(accept)
+            .open(window, cx);
     }
 
     pub(super) fn request_reload(

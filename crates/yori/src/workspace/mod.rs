@@ -1,5 +1,6 @@
 //! A single window of independent comparison editors, using the existing component kit.
 
+mod decision_dialog;
 mod disk_dialog;
 mod files;
 mod persistence;
@@ -10,7 +11,6 @@ mod tests;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Icon, IconName, Root, Sizable, WindowExt,
     button::{Button, ButtonVariants},
-    dialog::{Cancel, Confirm, DialogFooter},
     notification::Notification,
     tab::{Tab, TabBar, TabVariant},
     tooltip::Tooltip,
@@ -26,6 +26,7 @@ use yori_document::Document;
 
 use crate::comparison::{ComparisonPaths, MergePaths};
 use crate::editor::{AlignedEditor, DirtyChanged, PaneDocument};
+use decision_dialog::{Decision, DecisionDialog, DecisionShortcut};
 use tabs::Tabs;
 
 const KEY_CONTEXT: &str = "ComparisonWorkspace";
@@ -334,53 +335,38 @@ impl Workspace {
             target.is_none_or(|id| tab.id == id)
                 && tab.content.editor.read(cx).unresolved_count() != 0
         });
+        let detail = if unresolved {
+            "There are unresolved conflicts. Resolve them before saving, or discard this session."
+        } else {
+            "Your changes have not been saved. Save them, discard them, or keep the workspace open."
+        };
         let view = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let view = view.clone();
-            let save_view = view.clone();
-            let footer = DialogFooter::new()
-                .child(
-                    Button::new("cancel")
-                        .label("Cancel")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(Cancel), cx);
-                        }),
-                )
-                .child(
-                    Button::new("ok")
-                        .label("Discard")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
-                        }),
-                )
-                .child(Button::new("save-and-close")
-                    .label(if target.is_some() { "Save" } else { "Save all" })
-                    .primary()
-                    .disabled(unresolved)
-                    .on_click(move |_, window, cx| {
-                        let view = save_view.clone();
-                        window.defer(cx, move |window, cx| {
-                            window.close_dialog(cx);
-                            let _ = view.update(cx, |this, cx| this.save_before_close(target, window, cx));
-                        });
-                    }));
-
-            dialog
-                .title(title.clone())
-                .child(if unresolved {
-                    "There are unresolved conflicts. Resolve them before saving, or discard this session."
-                } else {
-                    "Your changes have not been saved. Save them, discard them, or keep the workspace open."
-                })
-                .overlay_closable(false)
-                .footer(footer)
-                .on_ok(move |_, window, cx| {
-                    // Restore modal focus before disposing the editor it belonged to.
-                    window.close_dialog(cx);
-                    let _ = view.update(cx, |this, cx| this.close(target, window, cx));
-                    false
-                })
+        let discard_view = view.clone();
+        let save_view = view.clone();
+        let cancel = Decision::new("cancel", "Cancel", DecisionShortcut::Escape);
+        let discard = Decision::new("ok", "Discard", DecisionShortcut::Mnemonic('d')).on_activate(
+            move |window, cx| {
+                // Restore modal focus before disposing the editor it belonged to.
+                let _ = discard_view.update(cx, |this, cx| this.close(target, window, cx));
+            },
+        );
+        let save = Decision::new(
+            "save-and-close",
+            if target.is_some() { "Save" } else { "Save all" },
+            DecisionShortcut::Enter,
+        )
+        .primary()
+        .disabled(unresolved)
+        .on_activate(move |window, cx| {
+            let _ = save_view.update(cx, |this, cx| {
+                this.save_before_close(target, window, cx);
+            });
         });
+
+        DecisionDialog::new(title, detail, cancel)
+            .alternate(discard)
+            .primary(save)
+            .open(window, cx);
     }
 
     fn choose_pair(&mut self, _: &OpenComparison, window: &mut Window, cx: &mut Context<Self>) {
