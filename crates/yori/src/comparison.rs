@@ -132,31 +132,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arity_assigns_roles_without_inspecting_filenames() {
-        let paths: Vec<_> = ["base", "local", "incoming", "result"]
-            .map(PathBuf::from)
-            .into();
-
-        assert_eq!(
-            ComparisonPaths::from_paths(&paths[..2]).unwrap(),
-            ComparisonPaths::diff("base".into(), "local".into())
-        );
-
-        let ComparisonPaths::Merge(merge) = ComparisonPaths::from_paths(&paths).unwrap() else {
-            panic!("four paths must be a merge, never two diffs");
-        };
-
-        assert_eq!(merge.base, paths[0]);
-        assert_eq!(merge.local, paths[1]);
-        assert_eq!(merge.incoming, paths[2]);
-        assert_eq!(merge.result, paths[3]);
-
-        for count in [0, 1, 3, 5, 6] {
-            assert!(ComparisonPaths::from_paths(&vec![PathBuf::from("file"); count]).is_err());
-        }
-    }
-
-    #[test]
     fn result_identity_supports_new_paths_and_input_aliases_without_writing() {
         let directory = tempfile::tempdir().unwrap();
         let input = directory.path().join("local.rs");

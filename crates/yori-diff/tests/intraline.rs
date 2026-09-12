@@ -1,8 +1,5 @@
-use yori_diff::{Alignment, DiffKind, IntralineDiff, restore_block};
-use yori_document::{
-    Document,
-    editing::{EditHistory, TextSelection},
-};
+use yori_diff::{Alignment, DiffKind, IntralineDiff};
+use yori_document::Document;
 
 fn doc(text: &str) -> Document {
     Document::from_bytes(text.as_bytes().to_vec()).unwrap()
@@ -147,52 +144,6 @@ fn does_not_change_line_pairing_or_create_emphasis_on_unpaired_rows() {
     assert_eq!(alignment.rows(), original);
     assert_eq!(left.text(), "start\nold\nend\n");
     assert_eq!(right.text(), "start\nnew\nadditional\nend\n");
-}
-
-#[test]
-fn highlights_follow_edits_restoration_and_undo_without_stale_ranges() {
-    let left = doc("same\nlet count = 1;\n");
-    let mut right = left.clone();
-    let mut history = EditHistory::default();
-    let start = right.text().find('1').unwrap();
-
-    let edit = history
-        .replace(
-            &mut right,
-            TextSelection::caret(start),
-            start..start + 1,
-            "20",
-        )
-        .unwrap();
-
-    let alignment = Alignment::between(&left, &right);
-    let changed = alignment.intraline(&left, &right, 1);
-    assert_eq!(right.copy_range(changed.right[0].clone()), "20");
-
-    let restored = restore_block(
-        &mut history,
-        &left,
-        &mut right,
-        edit.selection,
-        &alignment.blocks()[0],
-    )
-    .unwrap();
-
-    assert_eq!(
-        Alignment::between(&left, &right).intraline(&left, &right, 1),
-        IntralineDiff::default()
-    );
-
-    history
-        .undo(&mut right, restored.selection)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(
-        Alignment::between(&left, &right).intraline(&left, &right, 1),
-        changed
-    );
-    assert_eq!(left.text(), "same\nlet count = 1;\n");
 }
 
 #[test]

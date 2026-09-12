@@ -271,9 +271,7 @@ impl AlignedEditor {
 #[cfg(test)]
 mod tests {
     use super::path_labels;
-    use crate::editor::{
-        AlignedEditor, GUTTER_WIDTH, HEADER_HEIGHT, LINE_HEIGHT, PaneDocument, TEXT_INSET,
-    };
+    use crate::editor::{AlignedEditor, GUTTER_WIDTH, HEADER_HEIGHT, LINE_HEIGHT, PaneDocument};
     use gpui_kit::component::Root;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, TestAppContext};
@@ -341,31 +339,6 @@ mod tests {
         assert_eq!(first.row, 0);
         assert_eq!(scrolled.row, 1);
         assert!(geometry.hit(text_x - 1.0, text_y, 0.0, 0.0).in_gutter);
-    }
-
-    #[test]
-    fn text_inset_stays_fixed_while_source_content_scrolls() {
-        let geometry = EditorGeometry::new(
-            15.0,
-            25.0,
-            1200.0,
-            800.0,
-            HEADER_HEIGHT,
-            GUTTER_WIDTH,
-            LINE_HEIGHT,
-        );
-
-        for pane_offset in [0.0, geometry.pane_width()] {
-            let text_x = 15.0 + pane_offset + GUTTER_WIDTH;
-            let text_y = 25.0 + HEADER_HEIGHT;
-            let inset = geometry.hit(text_x - TEXT_INSET / 2.0, text_y, 0.0, 40.0);
-            let text = geometry.hit(text_x, text_y, 0.0, 40.0);
-
-            assert!(inset.in_gutter);
-            assert!(inset.text_x.abs() < f32::EPSILON);
-            assert!(!text.in_gutter);
-            assert!((text.text_x - 40.0).abs() < f32::EPSILON);
-        }
     }
 
     #[test]

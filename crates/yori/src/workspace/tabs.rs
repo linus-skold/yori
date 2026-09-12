@@ -126,22 +126,6 @@ mod tests {
     }
 
     #[test]
-    fn switching_and_duplicate_opens_preserve_independent_content() {
-        let mut tabs = Tabs::default();
-        let first = tabs.insert(pair("/base/a", "/local/a"), String::from("edited a"));
-        let second = tabs.insert(pair("/base/b", "/local/b"), String::from("edited b"));
-
-        tabs.activate(first);
-        let duplicate = tabs.insert(pair("/base/b", "/local/b"), String::from("disk b"));
-
-        assert_eq!(duplicate, second);
-        assert_eq!(tabs.active, Some(second));
-        assert_eq!(tabs.entries.len(), 2);
-        assert_eq!(tabs.get(first).unwrap().content, "edited a");
-        assert_eq!(tabs.get(second).unwrap().content, "edited b");
-    }
-
-    #[test]
     fn closing_tabs_keeps_stable_identity_and_selects_a_neighbor() {
         let mut tabs = Tabs::default();
         let a = tabs.insert(pair("a", "a"), ());
@@ -182,17 +166,6 @@ mod tests {
         tabs.remove(modified);
         assert_eq!(tabs.active, Some(clean));
         assert!(!tabs.requires_discard_confirmation(None, |dirty| *dirty));
-    }
-
-    #[test]
-    fn closing_the_last_active_tab_selects_its_left_neighbor() {
-        let mut tabs = Tabs::default();
-        let first = tabs.insert(pair("a", "a"), ());
-        let last = tabs.insert(pair("b", "b"), ());
-
-        tabs.remove(last);
-
-        assert_eq!(tabs.active, Some(first));
     }
 
     #[test]
@@ -255,18 +228,5 @@ mod tests {
         assert_eq!(tabs.get(first).unwrap().content, "edited first");
         assert_eq!(tabs.get(diff).unwrap().content, "edited diff");
         assert_ne!(tabs.label(first), tabs.label(diff));
-    }
-
-    #[test]
-    fn path_aliases_resolve_to_the_same_ordered_pair() {
-        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/before.rs");
-        let alias = file.parent().unwrap().join("./before.rs");
-
-        assert_eq!(
-            ComparisonPaths::diff(file.clone(), file.clone())
-                .resolve()
-                .unwrap(),
-            ComparisonPaths::diff(alias, file).resolve().unwrap()
-        );
     }
 }

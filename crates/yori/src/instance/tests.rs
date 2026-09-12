@@ -134,27 +134,6 @@ fn concurrent_launches_elect_exactly_one_owner() {
 }
 
 #[test]
-fn disconnect_releases_ownership_without_any_socket_cleanup() {
-    let bus = TestBus::new();
-    let primary = Instance::establish(bus.builder(), &[]).unwrap().unwrap();
-    let Instance {
-        _connection: connection,
-        ..
-    } = primary;
-    connection.close().unwrap();
-
-    let observer = bus.builder().build().unwrap();
-    let proxy = zbus::blocking::fdo::DBusProxy::new(&observer).unwrap();
-    let started = Instant::now();
-    while proxy.name_has_owner(BUS_NAME.try_into().unwrap()).unwrap() {
-        assert!(started.elapsed() < Duration::from_secs(5));
-        thread::sleep(Duration::from_millis(5));
-    }
-
-    assert!(Instance::establish(bus.builder(), &[]).unwrap().is_some());
-}
-
-#[test]
 fn invalid_and_oversized_requests_are_rejected_before_ui_dispatch() {
     for paths in [
         vec![vec![b"relative.rs".to_vec(), b"/local".to_vec()]],

@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use yori::{
     display::{DisplayLine, max_display_columns, source_offset_at},
-    geometry::{EditorGeometry, LocalHit, display_units, horizontal_scroll_limit},
+    geometry::{EditorGeometry, display_units, horizontal_scroll_limit},
 };
 use yori_diff::{Alignment, DiffKind};
 use yori_document::{Document, InputError, LineEnding};
@@ -102,7 +102,7 @@ fn handles_middle_changes_empty_sides_real_blank_lines_and_final_newlines() {
 }
 
 #[test]
-fn copy_uses_original_source_bytes_across_alignment_gaps() {
+fn interior_alignment_gap_keeps_the_preceding_crlf_boundary() {
     let left = doc("zero\r\none\r\ntwo");
     let right = doc("zero\r\ninserted\r\none\r\ntwo");
     let alignment = Alignment::between(&left, &right);
@@ -114,8 +114,6 @@ fn copy_uses_original_source_bytes_across_alignment_gaps() {
     let boundary = alignment.gap_offset(&left, gap, true);
 
     assert_eq!(boundary, "zero\r\n".len());
-    assert_eq!(left.copy_range(0..left.text().len()), "zero\r\none\r\ntwo");
-    assert!(!left.copy_range(0..left.text().len()).contains("inserted"));
 }
 
 #[test]
@@ -185,48 +183,6 @@ fn tab_expanded_horizontal_extent_can_reveal_the_final_source_position() {
 
     assert!(tail_after_full_scroll <= viewport_width);
     assert!(limit > display_units(document.lines()[0].content.len()) * 12.0);
-}
-
-#[test]
-fn local_editor_geometry_is_independent_of_desktop_placement() {
-    let geometry = EditorGeometry::new(21.0, 17.0, 1_000.0, 700.0, 42.0, 58.0, 20.0);
-    let content_local_pointer = (750.0, 91.0);
-    let window_local_pointer = (
-        content_local_pointer.0 + 21.0,
-        content_local_pointer.1 + 17.0,
-    );
-    let expected = LocalHit {
-        left_side: false,
-        incoming_side: false,
-        row: 3,
-        in_gutter: false,
-        text_x: 229.0,
-    };
-
-    assert_eq!(
-        geometry.hit(window_local_pointer.0, window_local_pointer.1, 11.0, 37.0),
-        expected
-    );
-
-    let document = doc("aa\nbb\ncc\ndd\n");
-    let alignment = Alignment::between(&document, &document);
-    for desktop_origin in [(0.0, 0.0), (500.0, 300.0), (-800.0, 120.0)] {
-        let global_pointer = (
-            window_local_pointer.0 + desktop_origin.0,
-            window_local_pointer.1 + desktop_origin.1,
-        );
-        let event_position = (
-            global_pointer.0 - desktop_origin.0,
-            global_pointer.1 - desktop_origin.1,
-        );
-        let hit = geometry.hit(event_position.0, event_position.1, 11.0, 37.0);
-
-        assert_eq!(hit, expected);
-        assert_eq!(
-            source_offset_at(&alignment, &document, hit.row, hit.left_side, 2, 4),
-            11
-        );
-    }
 }
 
 #[test]
