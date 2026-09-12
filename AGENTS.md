@@ -29,13 +29,8 @@ punctuation within functions and multi-step closures:
   without mandatory arrange/act/assert comments.
 
 Apply readability conventions in the first draft. Do not write deliberately
-compressed code with the intention of formatting it later. After each cohesive
-edit, reread the changed functions for logical grouping before starting the next
-change. This includes test setup, actions, and assertions.
-
-Before finishing, review the changed functions for these logical groups, then run
-rustfmt. Formatter compliance alone does not establish readable spacing. Comments
-should explain non-obvious intent or invariants, not label every ordinary phase.
+compressed code with the intention of formatting it later. This includes test setup,
+actions, and assertions.
 
 ## Local validation
 
