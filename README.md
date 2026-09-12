@@ -27,22 +27,34 @@ a tabbed workspace.
 Alignment gaps, conflict controls, and other presentation elements never become
 part of the underlying source files.
 
-## Building from source
-
-yori does not currently provide packaged releases. The documented development
-environment targets Linux and requires [Nix](https://nixos.org/).
+## Run with Nix
 
 ```sh
-nix develop "path:$PWD"
+nix run github:trixnz/yori
+```
+
+Pass file arguments after `--`:
+
+```sh
+nix run github:trixnz/yori -- BASELINE LOCAL
+```
+
+## Building from source
+
+```sh
 cargo build --release -p yori
 ```
 
-The resulting binary is written to `target/release/yori`.
-
-To run yori without creating a release build:
+### Nix
 
 ```sh
-nix develop "path:$PWD"
+nix develop
+cargo build --release -p yori
+```
+
+To run yori during development:
+
+```sh
 cargo run -p yori
 ```
 
