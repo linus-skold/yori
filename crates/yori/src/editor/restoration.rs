@@ -19,6 +19,10 @@ use super::{AlignedEditor, LINE_HEIGHT, RESTORE_WIDTH, Side};
 
 impl AlignedEditor {
     pub(super) fn selection_restore(&self) -> Option<SelectionRestore> {
+        if self.merge.is_some() {
+            return None;
+        }
+
         let selection = self.selection.as_ref()?;
         self.alignment.selection_restore(
             &self.left.document,

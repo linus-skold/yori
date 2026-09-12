@@ -41,6 +41,22 @@ _Avoid_: Three-way merge, conflict resolution
 Reconciliation of two versions relative to a common base into a result document,
 including resolution of conflicting changes.
 
+**Base**:
+The common-ancestor document used to distinguish independent changes from conflicts
+in a three-way merge.
+
+**Incoming document**:
+The other changed version being reconciled with the local document relative to
+base. The role does not imply a particular version-control system.
+
+**Result document**:
+The editable reconciliation of local and incoming changes. Its destination path
+is distinct from its current contents and does not make it another merge input.
+
+**Conflict**:
+Overlapping changes that need an explicit reconciliation decision. Editing or
+taking selected lines does not by itself declare the conflict resolved.
+
 **Workspace**:
-The application's collection of open comparison tabs, not a source project or
+The application's collection of open diff and merge tabs, not a source project or
 directory-comparison scope.

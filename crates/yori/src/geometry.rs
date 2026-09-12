@@ -42,11 +42,13 @@ pub struct EditorGeometry {
     gutter_width: f32,
     line_height: f32,
     center_width: f32,
+    merge_layout: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LocalHit {
     pub left_side: bool,
+    pub incoming_side: bool,
     pub row: usize,
     pub in_gutter: bool,
     pub text_x: f32,
@@ -72,6 +74,7 @@ impl EditorGeometry {
             gutter_width: gutter_width.max(0.0),
             line_height: line_height.max(f32::EPSILON),
             center_width: 0.0,
+            merge_layout: false,
         }
     }
 
@@ -82,13 +85,27 @@ impl EditorGeometry {
     }
 
     #[must_use]
+    pub fn with_merge_layout(mut self, enabled: bool) -> Self {
+        self.merge_layout = enabled;
+        if enabled {
+            self.center_width = 0.0;
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn incoming_pane_left(self) -> f32 {
+        self.pane_width() * 2.0
+    }
+
+    #[must_use]
     pub fn center_width(self) -> f32 {
         self.center_width
     }
 
     #[must_use]
     pub fn pane_width(self) -> f32 {
-        (self.viewport_width - self.center_width) / 2.0
+        (self.viewport_width - self.center_width) / if self.merge_layout { 3.0 } else { 2.0 }
     }
 
     #[must_use]
@@ -122,8 +139,11 @@ impl EditorGeometry {
         let local_x = window_x - self.origin_x;
         let local_y = window_y - self.origin_y;
         let left_side = local_x < self.pane_width();
+        let incoming_side = self.merge_layout && local_x >= self.incoming_pane_left();
         let pane_x = if left_side {
             local_x
+        } else if incoming_side {
+            local_x - self.incoming_pane_left()
         } else {
             local_x - self.right_pane_left()
         };
@@ -132,6 +152,7 @@ impl EditorGeometry {
 
         LocalHit {
             left_side,
+            incoming_side,
             row: whole_rows(row_y / self.line_height),
             in_gutter,
             text_x: if in_gutter {

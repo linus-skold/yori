@@ -44,7 +44,19 @@ impl AlignedEditor {
                     .h_full()
                     .flex_shrink_0(),
             )
-            .child(self.render_pane_status(Side::Right, pane_width + super::scrollbar::WIDTH, cx))
+            .child(self.render_pane_status(
+                Side::Right,
+                pane_width
+                    + if self.merge.is_none() {
+                        super::scrollbar::WIDTH
+                    } else {
+                        0.0
+                    },
+                cx,
+            ))
+            .children(self.merge.as_ref().map(|_| {
+                self.render_pane_status(Side::Incoming, pane_width + super::scrollbar::WIDTH, cx)
+            }))
     }
 
     fn render_pane_status(
@@ -66,22 +78,25 @@ impl AlignedEditor {
             .items_center()
             .gap(px(8.0))
             .overflow_hidden()
-            .border_l(px(if side == Side::Right { 1.0 } else { 0.0 }))
+            .border_l(px(if side == Side::Left { 0.0 } else { 1.0 }))
             .border_color(cx.theme().border)
             .child(self.render_language_menu(side, cx))
             .children(show_metadata.then(|| {
                 div()
-                    .id(if side == Side::Left {
-                        "left-line-endings"
-                    } else {
-                        "right-line-endings"
+                    .id(match side {
+                        Side::Left => "left-line-endings",
+                        Side::Right => "right-line-endings",
+                        Side::Incoming => "incoming-line-endings",
                     })
                     .text_color(cx.theme().muted_foreground)
                     .child(pane.line_endings.label())
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             }))
             .child(div().flex_1())
-            .children((side == Side::Right).then(|| self.render_options_controls(cx)))
+            .children(
+                (side == Side::Incoming || (side == Side::Right && self.merge.is_none()))
+                    .then(|| self.render_options_controls(cx)),
+            )
     }
 
     fn render_language_menu(&self, side: Side, cx: &mut Context<Self>) -> impl IntoElement {
@@ -96,19 +111,31 @@ impl AlignedEditor {
         };
         let editor = cx.weak_entity();
 
-        Button::new(if side == Side::Left {
-            "left-language"
-        } else {
-            "right-language"
+        Button::new(match side {
+            Side::Left => "left-language",
+            Side::Right => "right-language",
+            Side::Incoming => "incoming-language",
         })
         .label(label)
         .dropdown_caret(true)
         .ghost()
         .small()
-        .accessibility_label(if side == Side::Left {
-            "Baseline language"
-        } else {
-            "Local language"
+        .accessibility_label(match side {
+            Side::Left => {
+                if self.merge.is_some() {
+                    "Local language"
+                } else {
+                    "Baseline language"
+                }
+            }
+            Side::Right => {
+                if self.merge.is_some() {
+                    "Result language"
+                } else {
+                    "Local language"
+                }
+            }
+            Side::Incoming => "Incoming language",
         })
         .tooltip(tooltip)
         .dropdown_menu_with_anchor(Anchor::BottomLeft, move |mut menu, _, _| {
@@ -155,6 +182,7 @@ impl AlignedEditor {
     fn render_options_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let whitespace = self.show_whitespace;
         let connections = self.show_connections;
+        let two_way = self.merge.is_none();
         let vim = Self::vim_enabled(cx);
         let editor = cx.weak_entity();
 
@@ -192,10 +220,13 @@ impl AlignedEditor {
                         });
                     });
 
-                menu.item(whitespace_item)
-                    .item(connections_item)
-                    .separator()
-                    .item(vim_item)
+                let menu = menu.item(whitespace_item);
+                let menu = if two_way {
+                    menu.item(connections_item)
+                } else {
+                    menu
+                };
+                menu.separator().item(vim_item)
             })
     }
 
@@ -209,6 +240,7 @@ impl AlignedEditor {
         let pane = match side {
             Side::Left => &mut self.left,
             Side::Right => &mut self.right,
+            Side::Incoming => &mut self.merge.as_mut().expect("incoming pane").incoming,
         };
         pane.set_language(language);
 

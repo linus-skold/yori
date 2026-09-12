@@ -14,7 +14,7 @@ use std::{
 fn secondary_waits_for_workspace_acknowledgment_and_preserves_path_bytes() {
     let bus = TestBus::new();
     let primary = Instance::establish(bus.builder(), &[]).unwrap().unwrap();
-    let pairs = vec![(
+    let pairs = vec![ComparisonPaths::diff(
         PathBuf::from(OsString::from_vec(
             b"/tmp/baseline with spaces\xff.rs".to_vec(),
         )),
@@ -31,7 +31,7 @@ fn secondary_waits_for_workspace_acknowledgment_and_preserves_path_bytes() {
     });
 
     let request = primary.requests.recv_blocking().unwrap();
-    assert_eq!(request.pairs, expected);
+    assert_eq!(request.comparisons, expected);
     assert!(
         completion.recv_timeout(Duration::from_millis(30)).is_err(),
         "delivery alone must not release Perforce's temporary files"
@@ -47,6 +47,32 @@ fn secondary_waits_for_workspace_acknowledgment_and_preserves_path_bytes() {
 }
 
 #[test]
+fn merge_handoff_preserves_all_four_roles_until_workspace_acknowledgment() {
+    let bus = TestBus::new();
+    let primary = Instance::establish(bus.builder(), &[]).unwrap().unwrap();
+    let paths = [
+        PathBuf::from("/base.rs"),
+        PathBuf::from("/local.rs"),
+        PathBuf::from("/incoming.rs"),
+        PathBuf::from(OsString::from_vec(b"/result\xff.rs".to_vec())),
+    ];
+    let expected = vec![ComparisonPaths::from_paths(&paths).unwrap()];
+    let request = expected.clone();
+    let address = bus.address.clone();
+    let client = thread::spawn(move || {
+        Instance::establish(Builder::address(address.as_str()).unwrap(), &request)
+            .unwrap()
+            .is_none()
+    });
+
+    let request = primary.requests.recv_blocking().unwrap();
+    assert_eq!(request.comparisons, expected);
+    assert!(!client.is_finished());
+    request.complete(Ok(()));
+    assert!(client.join().unwrap());
+}
+
+#[test]
 fn workspace_errors_are_returned_without_becoming_a_second_instance() {
     let bus = TestBus::new();
     let primary = Instance::establish(bus.builder(), &[]).unwrap().unwrap();
@@ -59,7 +85,7 @@ fn workspace_errors_are_returned_without_becoming_a_second_instance() {
 
     let request = primary.requests.recv_blocking().unwrap();
     assert!(
-        request.pairs.is_empty(),
+        request.comparisons.is_empty(),
         "an empty request activates the window"
     );
     request.complete(Err("cannot read temporary baseline".into()));
@@ -130,13 +156,22 @@ fn disconnect_releases_ownership_without_any_socket_cleanup() {
 
 #[test]
 fn invalid_and_oversized_requests_are_rejected_before_ui_dispatch() {
-    for pairs in [
-        vec![(b"relative.rs".to_vec(), b"/local".to_vec())],
-        vec![(b"/base\0".to_vec(), b"/local".to_vec())],
-        vec![(b"/base".to_vec(), b"/local".to_vec()); MAX_PAIRS + 1],
-        vec![(vec![b'/'; MAX_PATH_BYTES], b"/local".to_vec())],
+    for paths in [
+        vec![vec![b"relative.rs".to_vec(), b"/local".to_vec()]],
+        vec![vec![b"/base\0".to_vec(), b"/local".to_vec()]],
+        vec![vec![b"/base".to_vec(), b"/local".to_vec()]; MAX_COMPARISONS + 1],
+        vec![vec![vec![b'/'; MAX_PATH_BYTES], b"/local".to_vec()]],
+        vec![vec![]],
+        vec![vec![b"/file".to_vec(); 3]],
+        vec![vec![b"/file".to_vec(); 5]],
+        vec![vec![
+            b"/file".to_vec(),
+            b"/file".to_vec(),
+            b"/file".to_vec(),
+            b"relative".to_vec(),
+        ]],
     ] {
-        assert!(decode_pairs(pairs).is_err());
+        assert!(decode_comparisons(paths).is_err());
     }
 
     let bus = TestBus::new();
@@ -147,7 +182,7 @@ fn invalid_and_oversized_requests_are_rejected_before_ui_dispatch() {
         OBJECT_PATH,
         Some(INTERFACE),
         "OpenComparisons",
-        &(vec![(b"relative".to_vec(), b"/local".to_vec())],),
+        &(vec![vec![b"relative".to_vec(), b"/local".to_vec()]],),
     );
     assert!(result.is_err());
     assert!(primary.requests.try_recv().is_err());

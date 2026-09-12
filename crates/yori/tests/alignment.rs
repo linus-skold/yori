@@ -197,6 +197,7 @@ fn local_editor_geometry_is_independent_of_desktop_placement() {
     );
     let expected = LocalHit {
         left_side: false,
+        incoming_side: false,
         row: 3,
         in_gutter: false,
         text_x: 229.0,

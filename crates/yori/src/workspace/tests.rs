@@ -1,10 +1,22 @@
 //! Input-level regressions on GPUI's headless test platform; no pixel captures.
 
+mod merging;
+
 use super::*;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{TestAppContext, VisualTestContext, point};
 use std::path::Path;
+
+fn merge_paths(result: &str) -> ComparisonPaths {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/merge");
+    ComparisonPaths::Merge(MergePaths {
+        base: fixtures.join("base.rs"),
+        local: fixtures.join("local.rs"),
+        incoming: fixtures.join("incoming.rs"),
+        result: fixtures.join(result),
+    })
+}
 
 fn harness(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) {
     cx.update(|cx| {
@@ -53,7 +65,7 @@ fn startup_and_handoff_dispatch_can_read_modal_state_and_report_file_errors(
     crate::dispatch_open(
         window,
         &workspace,
-        &[(
+        &[ComparisonPaths::diff(
             fixtures.join("intraline-before.rs"),
             fixtures.join("intraline-after.rs"),
         )],
@@ -65,7 +77,10 @@ fn startup_and_handoff_dispatch_can_read_modal_state_and_report_file_errors(
     let error = crate::dispatch_open(
         window,
         &workspace,
-        &[(fixtures.join("missing.rs"), fixtures.join("after.rs"))],
+        &[ComparisonPaths::diff(
+            fixtures.join("missing.rs"),
+            fixtures.join("after.rs"),
+        )],
         &mut cx.cx,
     )
     .unwrap_err();
@@ -126,6 +141,117 @@ fn switching_tabs_uses_current_geometry_on_the_first_frame(cx: &mut TestAppConte
             rows,
             "a later frame must not reposition the panes"
         );
+    });
+}
+
+#[gpui_kit::test]
+fn reopening_a_merge_preserves_its_tab_and_independent_history(cx: &mut TestAppContext) {
+    let (workspace, cx) = harness(cx);
+    let paths = merge_paths("result.rs");
+    let id = cx.update(|window, cx| {
+        workspace
+            .update(cx, |view, cx| {
+                view.open_comparisons(std::slice::from_ref(&paths), window, cx)
+            })
+            .unwrap();
+        let id = workspace.read(cx).tabs.active.unwrap();
+        assert_eq!(workspace.read(cx).tabs.entries.len(), 2);
+        assert_eq!(workspace.read(cx).tabs.active, Some(id));
+
+        window.click(("merge-incoming-button", 0usize), cx);
+        let editor = workspace
+            .read(cx)
+            .tabs
+            .get(id)
+            .unwrap()
+            .content
+            .editor
+            .clone();
+        assert!(editor.read(cx).is_dirty());
+
+        workspace.update(cx, |workspace, cx| workspace.activate(0, window, cx));
+        workspace
+            .update(cx, |view, cx| {
+                view.open_comparisons(std::slice::from_ref(&paths), window, cx)
+            })
+            .unwrap();
+        assert_eq!(workspace.read(cx).tabs.active, Some(id));
+        assert_eq!(workspace.read(cx).tabs.entries.len(), 2);
+        assert!(editor.read(cx).is_dirty());
+
+        window.press("ctrl-z", cx);
+        assert!(!editor.read(cx).is_dirty());
+        window.press("ctrl-shift-z", cx);
+        assert!(editor.read(cx).is_dirty());
+
+        window.press("ctrl-w", cx);
+        window.click("cancel", cx);
+        id
+    });
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        assert!(workspace.read(cx).tabs.get(id).is_some());
+        window.press("ctrl-w", cx);
+        window.click("ok", cx);
+    });
+    cx.run_until_parked();
+
+    cx.update(|_, cx| {
+        assert!(workspace.read(cx).tabs.get(id).is_none());
+        assert_eq!(workspace.read(cx).tabs.active, Some(0));
+    });
+}
+
+#[gpui_kit::test]
+fn input_pane_undo_is_scoped_to_the_active_tab(cx: &mut TestAppContext) {
+    let (workspace, cx) = harness(cx);
+    cx.update(|window, cx| {
+        let width = window.find("rows-viewport").bounds().size.width;
+        window.click_at("rows-viewport", point(width * 0.75, px(11.0)), cx);
+        window.input("X", cx);
+        let diff = workspace
+            .read(cx)
+            .tabs
+            .get(0)
+            .unwrap()
+            .content
+            .editor
+            .clone();
+        assert!(diff.read(cx).is_dirty());
+
+        workspace
+            .update(cx, |view, cx| {
+                view.open_comparisons(&[merge_paths("result.rs")], window, cx)
+            })
+            .unwrap();
+        let id = workspace.read(cx).tabs.active.unwrap();
+        let merge = workspace
+            .read(cx)
+            .tabs
+            .get(id)
+            .unwrap()
+            .content
+            .editor
+            .clone();
+        window.click(("merge-incoming-button", 0usize), cx);
+        assert!(merge.read(cx).is_dirty());
+
+        workspace.update(cx, |workspace, cx| workspace.activate(0, window, cx));
+        window.render_frame(cx);
+        let width = window.find("rows-viewport").bounds().size.width;
+        window.click_at("rows-viewport", point(width * 0.25, px(11.0)), cx);
+        window.press("ctrl-z", cx);
+        assert!(!diff.read(cx).is_dirty());
+        assert!(merge.read(cx).is_dirty());
+
+        workspace.update(cx, |workspace, cx| workspace.activate(id, window, cx));
+        window.render_frame(cx);
+        let width = window.find("rows-viewport").bounds().size.width;
+        window.click_at("rows-viewport", point(width * 0.9, px(11.0)), cx);
+        window.press("ctrl-z", cx);
+        assert!(!merge.read(cx).is_dirty());
+        assert!(!diff.read(cx).is_dirty());
     });
 }
 
@@ -353,8 +479,12 @@ fn forwarded_pairs_preserve_existing_edits_and_load_new_files_before_returning(
 
     cx.update(|window, cx| {
         workspace.update(cx, |view, cx| {
-            view.open_comparisons(&[(left.clone(), right.clone())], window, cx)
-                .unwrap();
+            view.open_comparisons(
+                &[ComparisonPaths::diff(left.clone(), right.clone())],
+                window,
+                cx,
+            )
+            .unwrap();
         });
         assert_eq!(workspace.read(cx).tabs.entries.len(), 2);
         assert_eq!(workspace.read(cx).tabs.active, Some(1));
@@ -370,7 +500,10 @@ fn forwarded_pairs_preserve_existing_edits_and_load_new_files_before_returning(
 
         workspace.update(cx, |view, cx| {
             view.open_comparisons(
-                &[(fixtures.join("before.rs"), fixtures.join("after.rs"))],
+                &[ComparisonPaths::diff(
+                    fixtures.join("before.rs"),
+                    fixtures.join("after.rs"),
+                )],
                 window,
                 cx,
             )
@@ -404,7 +537,11 @@ fn forwarded_requests_report_errors_and_do_not_interrupt_a_discard_dialog(cx: &m
     cx.update(|window, cx| {
         let error = workspace
             .update(cx, |view, cx| {
-                view.open_comparisons(&[(missing.clone(), missing.clone())], window, cx)
+                view.open_comparisons(
+                    &[ComparisonPaths::diff(missing.clone(), missing.clone())],
+                    window,
+                    cx,
+                )
             })
             .unwrap_err();
         assert!(error.contains("does-not-exist.rs"));
@@ -418,7 +555,11 @@ fn forwarded_requests_report_errors_and_do_not_interrupt_a_discard_dialog(cx: &m
 
         let error = workspace
             .update(cx, |view, cx| {
-                view.open_comparisons(&[(missing.clone(), missing.clone())], window, cx)
+                view.open_comparisons(
+                    &[ComparisonPaths::diff(missing.clone(), missing.clone())],
+                    window,
+                    cx,
+                )
             })
             .unwrap_err();
         assert!(error.contains("dialog open"));

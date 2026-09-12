@@ -1,6 +1,7 @@
 //! Headless line comparison, alignment, and undoable baseline restoration.
 
 mod intraline;
+pub mod merge;
 mod selection_restore;
 
 pub use intraline::IntralineDiff;
@@ -133,6 +134,61 @@ impl Alignment {
         }
 
         Self { rows, blocks }
+    }
+
+    /// Build a source-preserving projection supplied by a multi-pane display.
+    /// Each source index must be valid and occur once, in source order. Rows with
+    /// neither source are presentation-only space (for example ancestor context).
+    #[must_use]
+    pub fn from_projection(
+        left: &Document,
+        right: &Document,
+        pairs: impl IntoIterator<Item = (Option<usize>, Option<usize>)>,
+    ) -> Self {
+        let rows: Vec<_> = pairs
+            .into_iter()
+            .map(|(old, new)| {
+                let kind = match (old, new) {
+                    (Some(old), Some(new)) if left.full_line(old) == right.full_line(new) => {
+                        DiffKind::Equal
+                    }
+                    (Some(_), Some(_)) => DiffKind::Modified,
+                    (Some(_), None) => DiffKind::Removed,
+                    (None, Some(_)) => DiffKind::Added,
+                    (None, None) => DiffKind::Equal,
+                };
+                AlignmentRow {
+                    left: old,
+                    right: new,
+                    kind,
+                }
+            })
+            .collect();
+        let mut projection = Self {
+            rows,
+            blocks: Vec::new(),
+        };
+        let mut cursor = 0;
+        while cursor < projection.rows.len() {
+            if projection.rows[cursor].kind == DiffKind::Equal {
+                cursor += 1;
+                continue;
+            }
+
+            let start = cursor;
+            while cursor < projection.rows.len() && projection.rows[cursor].kind != DiffKind::Equal
+            {
+                cursor += 1;
+            }
+            let rows = start..cursor;
+            projection.blocks.push(ChangeBlock {
+                left: projection.source_range(left, rows.clone(), true),
+                right: projection.source_range(right, rows.clone(), false),
+                rows,
+            });
+        }
+
+        projection
     }
 
     #[must_use]

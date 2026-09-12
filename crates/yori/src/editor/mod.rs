@@ -8,6 +8,7 @@ mod connections;
 mod footer;
 mod highlighting;
 mod input;
+mod merge;
 mod restoration;
 mod scrollbar;
 mod vim;
@@ -82,6 +83,7 @@ gpui_kit::actions!(
 enum Side {
     Left,
     Right,
+    Incoming,
 }
 
 #[derive(Clone, Debug)]
@@ -204,6 +206,7 @@ pub(super) struct AlignedEditor {
     alignment: Alignment,
     navigation: ChangeNavigation,
     history: EditHistory,
+    merge: Option<merge::MergeState>,
     vim: yori::vim::Vim,
     dirty: DirtyState,
     preferred_column: Option<usize>,
@@ -257,6 +260,7 @@ impl AlignedEditor {
             alignment,
             navigation: ChangeNavigation::default(),
             history: EditHistory::default(),
+            merge: None,
             vim: yori::vim::Vim::default(),
             dirty,
             preferred_column: None,
@@ -277,6 +281,14 @@ impl AlignedEditor {
 
     pub(super) fn is_dirty(&self) -> bool {
         self.dirty.modified
+            || self.merge.as_ref().is_some_and(|merge| {
+                merge.session.conflicts().iter().any(|conflict| {
+                    merge
+                        .session
+                        .state(conflict.id)
+                        .is_some_and(|state| state.resolved)
+                })
+            })
     }
 
     pub(super) fn deactivate(&mut self, cx: &mut Context<Self>) {
@@ -291,14 +303,89 @@ impl AlignedEditor {
         match side {
             Side::Left => &self.left,
             Side::Right => &self.right,
+            Side::Incoming => {
+                &self
+                    .merge
+                    .as_ref()
+                    .expect("incoming pane requires merge mode")
+                    .incoming
+            }
         }
     }
 
     fn line_for_row(&self, side: Side, row: usize) -> Option<usize> {
-        self.alignment.rows().get(row).and_then(|row| match side {
-            Side::Left => row.left,
-            Side::Right => row.right,
+        if side == Side::Incoming {
+            return self.merge.as_ref()?.rows.get(row)?.incoming;
+        }
+
+        self.alignment.rows().get(row).and_then(|row| {
+            if side == Side::Left {
+                row.left
+            } else {
+                row.right
+            }
         })
+    }
+
+    fn pane_left(&self, side: Side) -> f32 {
+        match side {
+            Side::Left => 0.0,
+            Side::Right => self.geometry().right_pane_left(),
+            Side::Incoming => self.geometry().incoming_pane_left(),
+        }
+    }
+
+    fn row_for_source(&self, side: Side, offset: usize) -> usize {
+        if side != Side::Incoming {
+            return self.alignment.row_for_offset(
+                &self.document(side).document,
+                offset,
+                side == Side::Left,
+            );
+        }
+
+        let document = &self.document(side).document;
+        let line = document.line_at_offset(offset);
+        self.merge
+            .as_ref()
+            .expect("incoming pane")
+            .rows
+            .iter()
+            .position(|row| row.incoming == Some(line))
+            .unwrap_or(self.alignment.rows().len())
+    }
+
+    fn source_offset_for(&self, side: Side, row: usize, display_byte: usize) -> usize {
+        let document = &self.document(side).document;
+        if side != Side::Incoming {
+            return source_offset_at(
+                &self.alignment,
+                document,
+                row,
+                side == Side::Left,
+                display_byte,
+                TAB_WIDTH,
+            );
+        }
+
+        if let Some(line) = self.line_for_row(side, row) {
+            return DisplayLine::from_source(
+                document.content(line),
+                document.lines()[line].content.start,
+                TAB_WIDTH,
+            )
+            .source_offset(display_byte);
+        }
+        self.merge
+            .as_ref()
+            .expect("incoming pane")
+            .rows
+            .iter()
+            .skip(row)
+            .find_map(|row| row.incoming)
+            .map_or(document.text().len(), |line| {
+                document.lines()[line].content.start
+            })
     }
 
     fn geometry(&self) -> EditorGeometry {
@@ -312,6 +399,7 @@ impl AlignedEditor {
             GUTTER_WIDTH,
             LINE_HEIGHT,
         )
+        .with_merge_layout(self.merge.is_some())
         .with_center_width(if self.show_connections {
             connections::WIDTH
         } else {
@@ -333,37 +421,15 @@ impl AlignedEditor {
         );
         let side = if hit.left_side {
             Side::Left
+        } else if hit.incoming_side {
+            Side::Incoming
         } else {
             Side::Right
         };
         let pane = self.document(side);
         let row = hit.row;
-        if row >= self.alignment.rows().len() {
-            return (
-                side,
-                source_offset_at(
-                    &self.alignment,
-                    &pane.document,
-                    row,
-                    side == Side::Left,
-                    0,
-                    TAB_WIDTH,
-                ),
-            );
-        }
-
         let Some(line_index) = self.line_for_row(side, row) else {
-            return (
-                side,
-                source_offset_at(
-                    &self.alignment,
-                    &pane.document,
-                    row,
-                    side == Side::Left,
-                    0,
-                    TAB_WIDTH,
-                ),
-            );
+            return (side, self.source_offset_for(side, row, 0));
         };
 
         let source_line = &pane.document.lines()[line_index];
@@ -374,17 +440,7 @@ impl AlignedEditor {
         );
 
         if hit.text_x <= 0.0 || display.text.is_empty() {
-            return (
-                side,
-                source_offset_at(
-                    &self.alignment,
-                    &pane.document,
-                    row,
-                    side == Side::Left,
-                    0,
-                    TAB_WIDTH,
-                ),
-            );
+            return (side, self.source_offset_for(side, row, 0));
         }
 
         let theme = cx.theme();
@@ -407,17 +463,7 @@ impl AlignedEditor {
         );
         let display_offset = shaped.closest_index_for_x(px(hit.text_x));
 
-        (
-            side,
-            source_offset_at(
-                &self.alignment,
-                &pane.document,
-                row,
-                side == Side::Left,
-                display_offset,
-                TAB_WIDTH,
-            ),
-        )
+        (side, self.source_offset_for(side, row, display_offset))
     }
 
     fn max_horizontal_scroll(&self, window: &mut Window, cx: &App) -> f32 {
@@ -443,7 +489,14 @@ impl AlignedEditor {
         let max_columns = self
             .left
             .max_display_columns
-            .max(self.right.max_display_columns);
+            .max(self.right.max_display_columns)
+            .max(self.merge.as_ref().map_or(0, |merge| {
+                merge.incoming.max_display_columns.max(if merge.show_base {
+                    merge.base_columns
+                } else {
+                    0
+                })
+            }));
         let marker_columns = if self.show_whitespace {
             whitespace::ENDING_LABEL_COLUMNS
         } else {
@@ -458,6 +511,16 @@ impl AlignedEditor {
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let hit = self.geometry().hit(
+            f32::from(event.position.x),
+            f32::from(event.position.y),
+            self.vertical_scroll,
+            self.horizontal_scroll,
+        );
+        if self.is_base_preview_row(hit.row) || self.merge_header(hit.row).is_some() {
+            return;
+        }
+
         self.reposition_vim();
         self.finish_composition();
         self.preferred_column = None;
@@ -465,7 +528,7 @@ impl AlignedEditor {
         self.focus.focus(window, cx);
 
         let (side, offset) = self.source_offset_at(event.position, window, cx);
-        if side == Side::Left {
+        if side != Side::Right {
             self.cancel_vim();
         }
 
@@ -588,14 +651,14 @@ impl AlignedEditor {
         });
 
         let marked = (side == Side::Right)
-            .then(|| self.history.marked_range())
+            .then(|| self.marked_range())
             .flatten()
             .map(|range| display.display_range(range))
             .filter(|range| !range.is_empty());
 
         let changed: Vec<_> = match side {
             Side::Left => &intraline.left,
-            Side::Right => &intraline.right,
+            Side::Right | Side::Incoming => &intraline.right,
         }
         .iter()
         .map(|range| display.display_range(range.clone()))
@@ -611,7 +674,7 @@ impl AlignedEditor {
             &highlighting::OverlayColors {
                 changed: match side {
                     Side::Left => appearance::removed().emphasis,
-                    Side::Right => appearance::added().emphasis,
+                    Side::Right | Side::Incoming => appearance::added().emphasis,
                 },
                 selected: cx.theme().selection,
                 foreground: cx.theme().foreground,
@@ -622,7 +685,9 @@ impl AlignedEditor {
     fn row_colors(kind: DiffKind, side: Side) -> Option<appearance::DiffColors> {
         match (kind, side) {
             (DiffKind::Removed | DiffKind::Modified, Side::Left) => Some(appearance::removed()),
-            (DiffKind::Added | DiffKind::Modified, Side::Right) => Some(appearance::added()),
+            (DiffKind::Added | DiffKind::Modified, Side::Right | Side::Incoming) => {
+                Some(appearance::added())
+            }
             _ => None,
         }
     }
@@ -654,11 +719,19 @@ impl AlignedEditor {
 
         let row = &self.alignment.rows()[row_index];
         let pane = self.document(side);
-        let line = match side {
-            Side::Left => row.left,
-            Side::Right => row.right,
+        let line = self.line_for_row(side, row_index);
+        let kind = if side == Side::Incoming {
+            let result = row.right.map(|line| self.right.document.full_line(line));
+            let incoming = line.map(|line| pane.document.full_line(line));
+            if result == incoming {
+                DiffKind::Equal
+            } else {
+                DiffKind::Added
+            }
+        } else {
+            row.kind
         };
-        let colors = Self::row_colors(row.kind, side);
+        let colors = Self::row_colors(kind, side);
         let background = if line.is_none() {
             appearance::gap()
         } else {
@@ -670,11 +743,7 @@ impl AlignedEditor {
         let mut container = div()
             .absolute()
             .top(px(top))
-            .left(px(if side == Side::Left {
-                0.0
-            } else {
-                geometry.right_pane_left()
-            }))
+            .left(px(self.pane_left(side)))
             .w(px(pane_width))
             .h(px(LINE_HEIGHT))
             .overflow_hidden()
@@ -818,6 +887,15 @@ impl AlignedEditor {
 
         for row_index in first_row..end_row {
             let top = geometry.visible_row_top(row_index, first_row, row_offset);
+            if let Some(id) = self.merge_header(row_index) {
+                rows = rows.child(self.render_merge_header(id, top, geometry, cx));
+                continue;
+            }
+            if self.is_base_preview_row(row_index) {
+                rows = rows.child(self.render_base_preview_row(row_index, top, geometry, cx));
+                continue;
+            }
+
             // Fine-grained work is viewport-only and shared by both cells.
             let intraline =
                 self.alignment
@@ -826,6 +904,25 @@ impl AlignedEditor {
             rows = rows
                 .child(self.render_pane_row(Side::Left, row_index, top, geometry, &intraline, cx))
                 .child(self.render_pane_row(Side::Right, row_index, top, geometry, &intraline, cx));
+            if self.merge.is_some() {
+                let result = self
+                    .line_for_row(Side::Right, row_index)
+                    .map_or("", |line| self.right.document.content(line));
+                let incoming = self
+                    .line_for_row(Side::Incoming, row_index)
+                    .map_or("", |line| {
+                        self.document(Side::Incoming).document.content(line)
+                    });
+                let intraline = IntralineDiff::between(result, incoming);
+                rows = rows.child(self.render_pane_row(
+                    Side::Incoming,
+                    row_index,
+                    top,
+                    geometry,
+                    &intraline,
+                    cx,
+                ));
+            }
         }
 
         if self.focus.is_focused(window)
@@ -864,11 +961,7 @@ impl AlignedEditor {
             rows = rows.child(
                 div()
                     .absolute()
-                    .left(px(if selection.side == Side::Right {
-                        geometry.right_pane_left() + GUTTER_WIDTH
-                    } else {
-                        GUTTER_WIDTH
-                    }))
+                    .left(px(self.pane_left(selection.side) + GUTTER_WIDTH))
                     .top(px(0.0))
                     .w(px(text_viewport_width))
                     .h(px(geometry.rows_viewport_height()))
@@ -885,7 +978,11 @@ impl AlignedEditor {
             );
         }
 
-        rows = rows.child(self.render_restore_controls(geometry, cx));
+        if self.merge.is_none() {
+            rows = rows.child(self.render_restore_controls(geometry, cx));
+        } else {
+            rows = rows.child(self.render_merge_conflict_controls(geometry, cx));
+        }
 
         let input_entity = cx.entity();
         let input_focus = self.focus.clone();
@@ -999,15 +1096,20 @@ impl AlignedEditor {
             .child(self.render_footer(pane_width, cx))
             .child(self.render_pane_header(Side::Left, pane_width, cx))
             .child(self.render_pane_header(Side::Right, pane_width, cx))
-            .child(
+            .children(
+                self.merge
+                    .as_ref()
+                    .map(|_| self.render_pane_header(Side::Incoming, pane_width, cx)),
+            )
+            .children((1..if self.merge.is_some() { 3 } else { 2 }).map(|column| {
                 div()
                     .absolute()
-                    .top(px(0.0))
-                    .left(px(pane_width))
+                    .top_0()
+                    .left(px(display_units(column) * pane_width))
                     .w(px(1.0))
                     .h(px(HEADER_HEIGHT + geometry.rows_viewport_height()))
-                    .bg(cx.theme().border),
-            )
+                    .bg(cx.theme().border)
+            }))
     }
 }
 

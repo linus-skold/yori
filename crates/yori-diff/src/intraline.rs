@@ -18,7 +18,8 @@ pub struct IntralineDiff {
 }
 
 impl IntralineDiff {
-    pub(super) fn between(left: &str, right: &str) -> Self {
+    #[must_use]
+    pub fn between(left: &str, right: &str) -> Self {
         if left == right {
             return Self::default();
         }

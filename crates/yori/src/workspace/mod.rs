@@ -20,14 +20,22 @@ use gpui_kit::{
 };
 use yori_document::Document;
 
+use crate::comparison::{ComparisonPaths, MergePaths};
 use crate::editor::{AlignedEditor, DirtyChanged, PaneDocument};
-use tabs::{FilePair, Tabs};
+use tabs::Tabs;
 
 const KEY_CONTEXT: &str = "ComparisonWorkspace";
 
 gpui_kit::actions!(
     workspace,
-    [OpenComparison, CloseComparison, Quit, NextTab, PreviousTab]
+    [
+        OpenComparison,
+        OpenMerge,
+        CloseComparison,
+        Quit,
+        NextTab,
+        PreviousTab
+    ]
 );
 
 struct OpenTab {
@@ -68,6 +76,7 @@ impl Workspace {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn open_paths(
         &mut self,
         left: &std::path::Path,
@@ -75,23 +84,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let result =
-            FilePair::resolve(left, right).and_then(|pair| self.open_pair(pair, window, cx));
+        let result = self.open_comparison(
+            &ComparisonPaths::diff(left.into(), right.into()),
+            window,
+            cx,
+        );
         if let Err(error) = result {
             window.push_notification(Notification::error(error), cx);
         }
     }
 
-    /// Process one CLI handoff on the UI thread. Completion means every pair was
+    /// Process one CLI handoff on the UI thread. Completion means every comparison was
     /// loaded or rejected, not just queued; temporary files can then be released.
     pub(super) fn open_comparisons(
         &mut self,
-        pairs: &[(std::path::PathBuf, std::path::PathBuf)],
+        comparisons: &[ComparisonPaths],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         window.activate_window();
-        if pairs.is_empty() {
+        if comparisons.is_empty() {
             if !self.picking_files && !window.has_active_dialog(cx) {
                 self.focus_active(window, cx);
             }
@@ -102,9 +114,8 @@ impl Workspace {
         }
 
         let mut errors = Vec::new();
-        for (left, right) in pairs {
-            let result =
-                FilePair::resolve(left, right).and_then(|pair| self.open_pair(pair, window, cx));
+        for paths in comparisons {
+            let result = self.open_comparison(paths, window, cx);
             if let Err(error) = result {
                 window.push_notification(Notification::error(error.clone()), cx);
                 errors.push(error);
@@ -118,24 +129,43 @@ impl Workspace {
         }
     }
 
-    fn open_pair(
+    fn open_comparison(
         &mut self,
-        pair: FilePair,
+        paths: &ComparisonPaths,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        if let Some(id) = self.tabs.find(&pair) {
+        let paths = paths.resolve()?;
+        if let Some(id) = self.tabs.find(&paths) {
             self.activate(id, window, cx);
             return Ok(());
         }
 
-        let left = PaneDocument::new(pair.left.clone(), Document::read(&pair.left)?);
-        let right = PaneDocument::new(pair.right.clone(), Document::read(&pair.right)?);
-        self.deactivate(cx);
-        let editor = cx.new(|cx| AlignedEditor::new(left, right, window, cx));
+        // Read every input before adding a tab or acknowledging a handoff.
+        // RESULT is a destination: initialize it from the merge, never its disk contents.
+        let editor = match &paths {
+            ComparisonPaths::Diff { baseline, local } => {
+                let left = PaneDocument::new(baseline.clone(), Document::read(baseline)?);
+                let right = PaneDocument::new(local.clone(), Document::read(local)?);
+                self.deactivate(cx);
+
+                cx.new(|cx| AlignedEditor::new(left, right, window, cx))
+            }
+            ComparisonPaths::Merge(paths) => {
+                let session = yori_diff::merge::MergeSession::new(
+                    Document::read(&paths.base)?,
+                    Document::read(&paths.local)?,
+                    Document::read(&paths.incoming)?,
+                )
+                .map_err(|error| error.to_string())?;
+                self.deactivate(cx);
+
+                cx.new(|cx| AlignedEditor::new_merge(paths, session, window, cx))
+            }
+        };
         let subscription = cx.subscribe(&editor, |_, _, _: &DirtyChanged, cx| cx.notify());
         self.tabs.insert(
-            pair,
+            paths,
             OpenTab {
                 editor,
                 _subscription: subscription,
@@ -144,6 +174,10 @@ impl Workspace {
 
         cx.notify();
         Ok(())
+    }
+
+    fn choose_merge(&mut self, _: &OpenMerge, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_files(true, window, cx);
     }
 
     fn deactivate(&self, cx: &mut Context<Self>) {
@@ -267,6 +301,10 @@ impl Workspace {
     }
 
     fn choose_pair(&mut self, _: &OpenComparison, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_files(false, window, cx);
+    }
+
+    fn choose_files(&mut self, merging: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.picking_files || window.has_active_dialog(cx) {
             return;
         }
@@ -276,12 +314,14 @@ impl Workspace {
         cx.notify();
 
         cx.spawn_in(window, async move |view, cx| {
-            let result = choose_pair(cx).await;
+            let result = choose_paths(cx, merging).await;
             let _ = cx.update(|window, cx| {
                 let _ = view.update(cx, |this, cx| {
                     this.picking_files = false;
                     match result {
-                        Ok(Some((left, right))) => this.open_paths(&left, &right, window, cx),
+                        Ok(Some(paths)) => {
+                            let _ = this.open_comparisons(&[paths], window, cx);
+                        }
                         Ok(None) => this.focus_active(window, cx),
                         Err(error) => window.push_notification(Notification::error(error), cx),
                     }
@@ -301,11 +341,11 @@ impl Workspace {
             .items_center()
             .justify_center()
             .gap(px(12.0))
-            .child("Compare two files")
+            .child("Compare or merge files")
             .child(
                 div()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Choose a baseline, then a local file. Nothing is written to disk."),
+                    .child("Open a two-way diff or a three-way merge. Nothing is written to disk."),
             )
             .child(
                 Button::new("open-first-comparison")
@@ -319,10 +359,40 @@ impl Workspace {
             )
     }
 
+    fn render_open_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .child(
+                Button::new("open-merge")
+                    .icon(gpui_kit::assets::IconName::GitMerge)
+                    .ghost()
+                    .with_size(px(28.0))
+                    .accessibility_label("Open merge")
+                    .tooltip("Open three-way merge (Ctrl+Shift+M)")
+                    .disabled(self.picking_files)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.choose_merge(&OpenMerge, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("open-comparison")
+                    .icon(IconName::Plus)
+                    .ghost()
+                    .with_size(px(28.0))
+                    .accessibility_label("Open comparison")
+                    .tooltip("Open comparison (Ctrl+O)")
+                    .disabled(self.picking_files)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.choose_pair(&OpenComparison, window, cx);
+                    })),
+            )
+    }
+
     fn render_tab(&self, tab: &tabs::Tab<OpenTab>, cx: &mut Context<Self>) -> Tab {
         let id = tab.id;
         let label = self.tabs.label(id);
-        let description = tab.pair.description();
+        let description = tab.paths.description();
         let modified = tab.content.editor.read(cx).is_dirty();
         let accessible = format!(
             "{label}{}; {description}",
@@ -429,6 +499,7 @@ impl Render for Workspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::choose_pair))
+            .on_action(cx.listener(Self::choose_merge))
             .on_action(cx.listener(|this, _: &CloseComparison, window, cx| {
                 if let Some(id) = this.tabs.active {
                     this.request_close(Some(id), window, cx);
@@ -449,18 +520,7 @@ impl Render for Workspace {
                     .items_center()
                     .bg(cx.theme().tab_bar)
                     .child(div().flex_1().min_w_0().overflow_hidden().child(bar))
-                    .child(
-                        Button::new("open-comparison")
-                            .icon(IconName::Plus)
-                            .ghost()
-                            .with_size(px(28.0))
-                            .accessibility_label("Open comparison")
-                            .tooltip("Open comparison (Ctrl+O)")
-                            .disabled(self.picking_files)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.choose_pair(&OpenComparison, window, cx);
-                            })),
-                    ),
+                    .child(self.render_open_controls(cx)),
             )
             .child(
                 div()
@@ -497,17 +557,53 @@ async fn choose_file(
     Ok(result.and_then(|paths| paths.into_iter().next()))
 }
 
-async fn choose_pair(
+async fn choose_paths(
     cx: &mut AsyncWindowContext,
-) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, String> {
-    let Some(left) = choose_file(cx, "Select baseline file").await? else {
+    merging: bool,
+) -> Result<Option<ComparisonPaths>, String> {
+    let Some(base) = choose_file(
+        cx,
+        if merging {
+            "Select common ancestor (BASE)"
+        } else {
+            "Select baseline file"
+        },
+    )
+    .await?
+    else {
         return Ok(None);
     };
-    let Some(right) = choose_file(cx, "Select local file").await? else {
+    let Some(local) = choose_file(cx, "Select local file").await? else {
         return Ok(None);
     };
+    if !merging {
+        return Ok(Some(ComparisonPaths::diff(base, local)));
+    }
 
-    Ok(Some((left, right)))
+    let Some(incoming) = choose_file(cx, "Select incoming file").await? else {
+        return Ok(None);
+    };
+    let directory = local.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = local
+        .file_name()
+        .unwrap_or(local.as_os_str())
+        .to_string_lossy();
+    let request = cx
+        .update(|_, cx| cx.prompt_for_new_path(directory, Some(&name)))
+        .map_err(|error| error.to_string())?;
+    let result = request
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+
+    Ok(result.map(|result| {
+        ComparisonPaths::Merge(MergePaths {
+            base,
+            local,
+            incoming,
+            result,
+        })
+    }))
 }
 
 pub(super) fn init(cx: &mut App) {
@@ -519,6 +615,7 @@ pub(super) fn init(cx: &mut App) {
 
     cx.bind_keys([
         KeyBinding::new(&format!("{command}-o"), OpenComparison, Some(KEY_CONTEXT)),
+        KeyBinding::new(&format!("{command}-shift-m"), OpenMerge, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-w"), CloseComparison, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-q"), Quit, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-tab", NextTab, Some(KEY_CONTEXT)),

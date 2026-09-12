@@ -55,7 +55,7 @@ impl Alignment {
         })
     }
 
-    fn source_range(
+    pub(crate) fn source_range(
         &self,
         document: &Document,
         rows: Range<usize>,

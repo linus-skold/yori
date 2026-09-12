@@ -127,6 +127,20 @@ impl Vim {
         *self = Self::default();
     }
 
+    /// Route history keys through a host's richer history (for example merge
+    /// text plus resolution status) without changing command-prefix handling.
+    pub fn external_history_key(&mut self, key: &str) -> Option<bool> {
+        if self.mode == Mode::Insert || !matches!(key, "u" | "ctrl-r") {
+            return None;
+        }
+
+        match self.keys.feed(key, self.visual.is_some()) {
+            Some(Command::Undo) => Some(false),
+            Some(Command::Redo) => Some(true),
+            _ => None,
+        }
+    }
+
     pub fn handle(
         &mut self,
         key: &str,

@@ -19,18 +19,20 @@ use zbus::{
     fdo,
 };
 
+use crate::comparison::ComparisonPaths;
+
 const BUS_NAME: &str = "io.github.trixnz.yori";
 const OBJECT_PATH: &str = "/io/github/trixnz/yori";
-const INTERFACE: &str = "io.github.trixnz.yori.Instance1";
+const INTERFACE: &str = "io.github.trixnz.yori.Instance2";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_PAIRS: usize = 128;
+const MAX_COMPARISONS: usize = 128;
 const MAX_PATH_BYTES: usize = 1024 * 1024;
 
 /// Path bytes avoid D-Bus string normalization and preserve non-UTF-8 filenames.
-type WirePairs = Vec<(Vec<u8>, Vec<u8>)>;
+type WireComparisons = Vec<Vec<Vec<u8>>>;
 
 pub(super) struct OpenRequest {
-    pub pairs: Vec<(PathBuf, PathBuf)>,
+    pub comparisons: Vec<ComparisonPaths>,
     received: Instant,
     reply: Sender<Result<(), String>>,
 }
@@ -50,14 +52,14 @@ struct Endpoint {
     requests: Sender<OpenRequest>,
 }
 
-#[zbus::interface(name = "io.github.trixnz.yori.Instance1")]
+#[zbus::interface(name = "io.github.trixnz.yori.Instance2")]
 impl Endpoint {
-    async fn open_comparisons(&self, pairs: WirePairs) -> fdo::Result<()> {
-        let pairs = decode_pairs(pairs)?;
+    async fn open_comparisons(&self, paths: WireComparisons) -> fdo::Result<()> {
+        let comparisons = decode_comparisons(paths)?;
         let (reply, response) = async_channel::bounded(1);
         self.requests
             .try_send(OpenRequest {
-                pairs,
+                comparisons,
                 received: Instant::now(),
                 reply,
             })
@@ -84,19 +86,19 @@ pub(super) struct Instance {
 impl Instance {
     /// Return the primary instance, or `None` after a successful handoff. Failure
     /// never falls back to a second window: a timed-out request may have started.
-    pub fn start(pairs: &[(PathBuf, PathBuf)]) -> Result<Option<Self>, String> {
+    pub fn start(comparisons: &[ComparisonPaths]) -> Result<Option<Self>, String> {
         let builder = Builder::session()
             .map_err(|error| format!("cannot connect to the desktop session bus: {error}"))?;
-        Self::establish(builder, pairs)
+        Self::establish(builder, comparisons)
     }
 
     fn establish(
         builder: Builder<'_>,
-        pairs: &[(PathBuf, PathBuf)],
+        comparisons: &[ComparisonPaths],
     ) -> Result<Option<Self>, String> {
-        let wire = encode_pairs(pairs);
+        let wire = encode_comparisons(comparisons);
         // Validate first launches too, before claiming the name or starting GPUI.
-        decode_pairs(wire.clone()).map_err(|error| error.to_string())?;
+        decode_comparisons(wire.clone()).map_err(|error| error.to_string())?;
         let (requests, incoming) = async_channel::bounded(16);
         let connection = builder
             .method_timeout(REQUEST_TIMEOUT)
@@ -146,28 +148,28 @@ impl Instance {
     }
 }
 
-fn encode_pairs(pairs: &[(PathBuf, PathBuf)]) -> WirePairs {
-    pairs
+fn encode_comparisons(comparisons: &[ComparisonPaths]) -> WireComparisons {
+    comparisons
         .iter()
-        .map(|(left, right)| {
-            (
-                left.as_os_str().as_bytes().to_vec(),
-                right.as_os_str().as_bytes().to_vec(),
-            )
+        .map(|comparison| {
+            comparison
+                .paths()
+                .iter()
+                .map(|path| path.as_os_str().as_bytes().to_vec())
+                .collect()
         })
         .collect()
 }
 
-fn decode_pairs(pairs: WirePairs) -> fdo::Result<Vec<(PathBuf, PathBuf)>> {
-    if pairs.len() > MAX_PAIRS
-        || pairs
+fn decode_comparisons(comparisons: WireComparisons) -> fdo::Result<Vec<ComparisonPaths>> {
+    if comparisons.len() > MAX_COMPARISONS
+        || comparisons.iter().flatten().map(Vec::len).sum::<usize>() > MAX_PATH_BYTES
+        || comparisons
             .iter()
-            .map(|(left, right)| left.len() + right.len())
-            .sum::<usize>()
-            > MAX_PATH_BYTES
+            .any(|paths| !matches!(paths.len(), 2 | 4))
     {
         return Err(fdo::Error::InvalidArgs(
-            "too many comparisons or oversized file paths".into(),
+            "expected two or four paths per comparison, within request size limits".into(),
         ));
     }
 
@@ -188,8 +190,14 @@ fn decode_pairs(pairs: WirePairs) -> fdo::Result<Vec<(PathBuf, PathBuf)>> {
         Ok(path)
     };
 
-    pairs
+    comparisons
         .into_iter()
-        .map(|(left, right)| Ok((decode(left)?, decode(right)?)))
+        .map(|paths| {
+            let paths = paths
+                .into_iter()
+                .map(decode)
+                .collect::<fdo::Result<Vec<_>>>()?;
+            ComparisonPaths::from_paths(&paths).map_err(fdo::Error::InvalidArgs)
+        })
         .collect()
 }

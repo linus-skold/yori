@@ -13,18 +13,18 @@ use std::{
     time::Duration,
 };
 
-type Pairs = Vec<(Vec<u8>, Vec<u8>)>;
-type Pending = (Pairs, async_channel::Sender<zbus::fdo::Result<()>>);
+type Comparisons = Vec<Vec<Vec<u8>>>;
+type Pending = (Comparisons, async_channel::Sender<zbus::fdo::Result<()>>);
 
 struct WorkspaceStub {
     requests: mpsc::Sender<Pending>,
 }
 
-#[zbus::interface(name = "io.github.trixnz.yori.Instance1")]
+#[zbus::interface(name = "io.github.trixnz.yori.Instance2")]
 impl WorkspaceStub {
-    async fn open_comparisons(&self, pairs: Pairs) -> zbus::fdo::Result<()> {
+    async fn open_comparisons(&self, paths: Comparisons) -> zbus::fdo::Result<()> {
         let (reply, response) = async_channel::bounded(1);
-        self.requests.send((pairs, reply)).unwrap();
+        self.requests.send((paths, reply)).unwrap();
         response.recv().await.unwrap()
     }
 }
@@ -53,7 +53,7 @@ fn cli(bus: &TestBus, directory: &std::path::Path) -> Command {
 }
 
 #[test]
-fn cli_forwards_absolute_path_bytes_and_exits_only_after_the_reply() {
+fn cli_forwards_diff_and_merge_roles_and_exits_only_after_the_reply() {
     let bus = TestBus::new();
     let directory = tempfile::tempdir().unwrap();
     let (requests, incoming) = mpsc::channel();
@@ -65,43 +65,38 @@ fn cli_forwards_absolute_path_bytes_and_exits_only_after_the_reply() {
         .unwrap()
         .build()
         .unwrap();
-    let local = OsString::from_vec(b"local\xff.rs".to_vec());
+    let paths = [
+        OsString::from("base with spaces.rs"),
+        OsString::from_vec(b"local\xff.rs".to_vec()),
+        OsString::from("incoming\nfile.go"),
+        OsString::from_vec(b"result\xfe.cpp".to_vec()),
+    ];
 
-    for (focus_only, fail) in [(false, false), (true, false), (false, true)] {
+    for (count, fail) in [(2, false), (0, false), (2, true), (4, false), (4, true)] {
         let mut command = cli(&bus, directory.path());
-        if !focus_only {
-            command.arg("baseline with spaces.rs").arg(&local);
-        }
+        command.args(&paths[..count]);
         let mut child = RunningCli(command.spawn().unwrap());
-        let (pairs, reply) = incoming.recv_timeout(Duration::from_secs(5)).unwrap();
-        let expected = if focus_only {
+        let (comparisons, reply) = incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+        let expected = if count == 0 {
             Vec::new()
         } else {
-            vec![(
-                directory
-                    .path()
-                    .join("baseline with spaces.rs")
-                    .as_os_str()
-                    .as_bytes()
-                    .to_vec(),
-                directory
-                    .path()
-                    .join(&local)
-                    .as_os_str()
-                    .as_bytes()
-                    .to_vec(),
-            )]
+            vec![
+                paths[..count]
+                    .iter()
+                    .map(|path| directory.path().join(path).as_os_str().as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            ]
         };
-        assert_eq!(pairs, expected);
+        assert_eq!(comparisons, expected);
         assert!(
             child.0.try_wait().unwrap().is_none(),
-            "the CLI must wait until files have been consumed"
+            "the CLI must wait until all inputs have been consumed"
         );
 
         reply
             .send_blocking(if fail {
                 Err(zbus::fdo::Error::Failed(
-                    "temporary baseline unreadable".into(),
+                    "temporary input unreadable".into(),
                 ))
             } else {
                 Ok(())
@@ -118,7 +113,7 @@ fn cli_forwards_absolute_path_bytes_and_exits_only_after_the_reply() {
             .unwrap();
         assert_eq!(status.success(), !fail, "{stderr}");
         if fail {
-            assert!(stderr.contains("temporary baseline unreadable"));
+            assert!(stderr.contains("temporary input unreadable"));
         }
     }
 }
@@ -127,12 +122,14 @@ fn cli_forwards_absolute_path_bytes_and_exits_only_after_the_reply() {
 fn invalid_arguments_and_missing_bus_fail_without_starting_a_window() {
     let bus = TestBus::new();
     let directory = tempfile::tempdir().unwrap();
-    let result = cli(&bus, directory.path())
-        .arg("unpaired.rs")
-        .output()
-        .unwrap();
-    assert_eq!(result.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&result.stderr).contains("usage:"));
+    for count in [1, 3, 5, 6] {
+        let result = cli(&bus, directory.path())
+            .args(vec!["file.rs"; count])
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("usage:"));
+    }
 
     let result = cli(&bus, directory.path())
         .env(

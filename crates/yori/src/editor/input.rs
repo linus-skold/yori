@@ -12,6 +12,9 @@ use super::{
 use yori::geometry::{display_units, whole_rows};
 use yori_document::editing::{self, TextSelection};
 
+#[cfg(test)]
+mod history_tests;
+
 pub(super) struct ViewAnchor {
     side: Side,
     offset: usize,
@@ -29,10 +32,21 @@ impl AlignedEditor {
             })
     }
 
+    pub(super) fn marked_range(&self) -> Option<Range<usize>> {
+        self.merge.as_ref().map_or_else(
+            || self.history.marked_range(),
+            |merge| merge.session.marked_range(),
+        )
+    }
+
     pub(super) fn finish_composition(&mut self) {
         if let Some(selection) = self.right_selection() {
-            self.history
-                .finish_composition(&self.right.document, selection);
+            if let Some(merge) = &mut self.merge {
+                merge.session.finish_transaction(selection);
+            } else {
+                self.history
+                    .finish_composition(&self.right.document, selection);
+            }
         }
     }
 
@@ -71,7 +85,11 @@ impl AlignedEditor {
             cx.emit(super::DirtyChanged);
         }
 
-        self.alignment = Alignment::between(&self.left.document, &self.right.document);
+        if self.merge.is_some() {
+            self.refresh_merge_projection();
+        } else {
+            self.alignment = Alignment::between(&self.left.document, &self.right.document);
+        }
         self.hovered_connection = None;
 
         self.selection = Some(Selection {
@@ -193,6 +211,20 @@ impl AlignedEditor {
             return;
         };
 
+        if let Some(merge) = &mut self.merge {
+            if Self::vim_enabled(cx) && self.vim.mode() == yori::vim::Mode::Insert {
+                merge.session.begin_transaction(selection);
+            }
+            match merge.session.replace(selection, range, text) {
+                Ok(update) => self.apply_merge_update(update, window, cx),
+                Err(error) => {
+                    eprintln!("merge edit rejected: {error}");
+                    window.play_system_bell();
+                }
+            }
+            return;
+        }
+
         if Self::vim_enabled(cx) && self.vim.mode() == yori::vim::Mode::Insert {
             self.history
                 .begin_transaction(&self.right.document, selection);
@@ -222,9 +254,7 @@ impl AlignedEditor {
             .as_ref()
             .map_or(Side::Right, |selection| selection.side);
         let document = &self.document(side).document;
-        let row = self
-            .alignment
-            .row_for_offset(document, offset, side == Side::Left);
+        let row = self.row_for_source(side, offset);
         let range = document.line_content_range(document.line_at_offset(offset));
         let display =
             DisplayLine::from_source(&document.text()[range.clone()], range.start, TAB_WIDTH);
@@ -309,12 +339,10 @@ impl AlignedEditor {
             anchor: selection.anchor,
             head: selection.head,
         };
-        let document = if side == Side::Left {
-            &self.left.document
-        } else {
-            &self.right.document
-        };
-        let next = editing::navigate(document, old, motion, extend, &mut self.preferred_column);
+        let document = &self.document(side).document;
+        let mut column = self.preferred_column;
+        let next = editing::navigate(document, old, motion, extend, &mut column);
+        self.preferred_column = column;
 
         self.selection = Some(Selection {
             side,
@@ -351,7 +379,7 @@ impl AlignedEditor {
         };
 
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let range = self.history.marked_range().unwrap_or(selection.range());
+            let range = self.marked_range().unwrap_or(selection.range());
             self.replace(range, &text, window, cx);
         }
     }
@@ -423,11 +451,62 @@ impl AlignedEditor {
         self.travel_history(true, window, cx);
     }
 
-    fn travel_history(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.cancel_vim();
-        let Some(selection) = self.right_selection() else {
+    pub(super) fn travel_history(
+        &mut self,
+        redo: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Input fields and dialogs own their history. Only the focused source
+        // surface may route these commands into the active comparison's history.
+        if !self.focus.is_focused(window) {
+            cx.propagate();
             return;
-        };
+        }
+
+        let input_selection = self
+            .selection
+            .clone()
+            .filter(|selection| selection.side != Side::Right);
+        let preferred_column = self.preferred_column;
+        self.cancel_vim();
+        let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
+        self.travel_result_history(redo, selection, window, cx);
+
+        // Rendering/history updates temporarily select RESULT so the existing
+        // reveal logic can show the affected edit. Immutable input selections
+        // remain valid and must not be replaced by that result caret.
+        if let Some(selection) = input_selection {
+            self.selection = Some(selection);
+            self.preferred_column = preferred_column;
+            self.sync_vim_selection(cx);
+            cx.notify();
+        }
+    }
+
+    fn travel_result_history(
+        &mut self,
+        redo: bool,
+        selection: TextSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(merge) = &mut self.merge {
+            let result = if redo {
+                merge.session.redo(selection)
+            } else {
+                merge.session.undo(selection)
+            };
+            match result {
+                Ok(Some(update)) => self.apply_merge_update(update, window, cx),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("merge undo rejected: {error}");
+                    window.play_system_bell();
+                }
+            }
+            return;
+        }
 
         let anchor = self.view_anchor();
         let result = if redo {
@@ -487,9 +566,7 @@ impl EntityInputHandler for AlignedEditor {
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
         self.right_selection()?;
-        self.history
-            .marked_range()
-            .map(|range| self.bytes_to_utf16(range))
+        self.marked_range().map(|range| self.bytes_to_utf16(range))
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -513,7 +590,7 @@ impl EntityInputHandler for AlignedEditor {
 
         let range = range
             .map(|range| self.bytes_from_utf16(range))
-            .or_else(|| self.history.marked_range())
+            .or_else(|| self.marked_range())
             .unwrap_or(selection.range());
 
         self.replace(range, text, window, cx);
@@ -536,11 +613,28 @@ impl EntityInputHandler for AlignedEditor {
 
         let range = range
             .map(|range| self.bytes_from_utf16(range))
-            .or_else(|| self.history.marked_range())
+            .or_else(|| self.marked_range())
             .unwrap_or(selection.range());
         let selected = selected.map(|range| {
             editing::from_utf16(text, range.start)..editing::from_utf16(text, range.end)
         });
+        if let Some(merge) = &mut self.merge {
+            merge.session.begin_transaction(selection);
+            let update = merge.session.edit_with(selection, |document, history| {
+                history
+                    .replace_marked(document, selection, range, text, selected)
+                    .map(|edit| ((), Some(edit)))
+            });
+            match update {
+                Ok(((), update)) => self.apply_merge_update(update, window, cx),
+                Err(error) => {
+                    eprintln!("merge composition rejected: {error}");
+                    window.play_system_bell();
+                }
+            }
+            return;
+        }
+
         if Self::vim_enabled(cx) && self.vim.mode() == yori::vim::Mode::Insert {
             self.history
                 .begin_transaction(&self.right.document, selection);

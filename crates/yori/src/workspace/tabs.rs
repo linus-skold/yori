@@ -1,38 +1,12 @@
 //! Comparison identity and tab lifetime, independent of rendering.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FilePair {
-    pub left: PathBuf,
-    pub right: PathBuf,
-}
-
-impl FilePair {
-    pub fn resolve(left: &Path, right: &Path) -> Result<Self, String> {
-        let resolve = |path: &Path| {
-            path.canonicalize()
-                .map_err(|error| format!("cannot open {}: {error}", path.display()))
-        };
-
-        Ok(Self {
-            left: resolve(left)?,
-            right: resolve(right)?,
-        })
-    }
-
-    pub fn description(&self) -> String {
-        format!(
-            "Baseline: {}\nLocal: {}",
-            self.left.display(),
-            self.right.display()
-        )
-    }
-}
+use crate::comparison::ComparisonPaths;
 
 pub(super) struct Tab<T> {
     pub id: usize,
-    pub pair: FilePair,
+    pub paths: ComparisonPaths,
     pub content: T,
 }
 
@@ -53,10 +27,10 @@ impl<T> Default for Tabs<T> {
 }
 
 impl<T> Tabs<T> {
-    pub fn find(&self, pair: &FilePair) -> Option<usize> {
+    pub fn find(&self, paths: &ComparisonPaths) -> Option<usize> {
         self.entries
             .iter()
-            .find(|tab| &tab.pair == pair)
+            .find(|tab| &tab.paths == paths)
             .map(|tab| tab.id)
     }
 
@@ -71,15 +45,15 @@ impl<T> Tabs<T> {
     }
 
     /// Duplicate opens preserve the existing content rather than replacing it.
-    pub fn insert(&mut self, pair: FilePair, content: T) -> usize {
-        if let Some(id) = self.find(&pair) {
+    pub fn insert(&mut self, paths: ComparisonPaths, content: T) -> usize {
+        if let Some(id) = self.find(&paths) {
             self.activate(id);
             return id;
         }
 
         let id = self.next_id;
         self.next_id += 1;
-        self.entries.push(Tab { id, pair, content });
+        self.entries.push(Tab { id, paths, content });
         self.active = Some(id);
 
         id
@@ -114,7 +88,7 @@ impl<T> Tabs<T> {
 
     pub fn label(&self, id: usize) -> String {
         let tab = self.get(id).expect("label requested for an existing tab");
-        let path = &tab.pair.right;
+        let path = tab.paths.target();
         let name = path
             .file_name()
             .unwrap_or(path.as_os_str())
@@ -122,7 +96,7 @@ impl<T> Tabs<T> {
         let matching_names = self
             .entries
             .iter()
-            .filter(|other| other.pair.right.file_name() == path.file_name())
+            .filter(|other| other.paths.target().file_name() == path.file_name())
             .count();
         if matching_names == 1 {
             return name.into_owned();
@@ -133,10 +107,10 @@ impl<T> Tabs<T> {
         let matching_locals = self
             .entries
             .iter()
-            .filter(|other| other.pair.right == *path)
+            .filter(|other| other.paths.target() == path)
             .count();
         if matching_locals > 1 {
-            format!("{label} ← {}", tab.pair.left.display())
+            format!("{label} ← {}", tab.paths.qualifier())
         } else {
             label
         }
@@ -147,11 +121,8 @@ impl<T> Tabs<T> {
 mod tests {
     use super::*;
 
-    fn pair(left: &str, right: &str) -> FilePair {
-        FilePair {
-            left: left.into(),
-            right: right.into(),
-        }
+    fn pair(left: &str, right: &str) -> ComparisonPaths {
+        ComparisonPaths::diff(left.into(), right.into())
     }
 
     #[test]
@@ -243,13 +214,59 @@ mod tests {
     }
 
     #[test]
+    fn merge_identity_includes_all_roles_and_preserves_independent_tabs() {
+        let paths = crate::comparison::MergePaths {
+            base: "/base.rs".into(),
+            local: "/local.rs".into(),
+            incoming: "/incoming.rs".into(),
+            result: "/result.rs".into(),
+        };
+        let original = ComparisonPaths::Merge(paths.clone());
+        let mut tabs = Tabs::default();
+        let first = tabs.insert(original.clone(), "edited first");
+        let diff = tabs.insert(pair("/base.rs", "/result.rs"), "edited diff");
+
+        for variant in [
+            crate::comparison::MergePaths {
+                base: "/other-base.rs".into(),
+                ..paths.clone()
+            },
+            crate::comparison::MergePaths {
+                local: paths.incoming.clone(),
+                incoming: paths.local.clone(),
+                ..paths.clone()
+            },
+            crate::comparison::MergePaths {
+                incoming: "/other-incoming.rs".into(),
+                ..paths.clone()
+            },
+            crate::comparison::MergePaths {
+                result: "/other-result.rs".into(),
+                ..paths.clone()
+            },
+        ] {
+            let id = tabs.insert(ComparisonPaths::Merge(variant), "another merge");
+            assert_ne!(id, first);
+            assert_ne!(id, diff);
+        }
+
+        assert_eq!(tabs.insert(original, "replacement must be ignored"), first);
+        assert_eq!(tabs.entries.len(), 6);
+        assert_eq!(tabs.get(first).unwrap().content, "edited first");
+        assert_eq!(tabs.get(diff).unwrap().content, "edited diff");
+        assert_ne!(tabs.label(first), tabs.label(diff));
+    }
+
+    #[test]
     fn path_aliases_resolve_to_the_same_ordered_pair() {
         let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/before.rs");
         let alias = file.parent().unwrap().join("./before.rs");
 
         assert_eq!(
-            FilePair::resolve(&file, &file).unwrap(),
-            FilePair::resolve(&alias, &file).unwrap()
+            ComparisonPaths::diff(file.clone(), file.clone())
+                .resolve()
+                .unwrap(),
+            ComparisonPaths::diff(alias, file).resolve().unwrap()
         );
     }
 }

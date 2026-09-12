@@ -28,13 +28,59 @@ fn path_labels(path: &Path) -> (String, String) {
     (name, directory)
 }
 
+struct ReviewNavigation {
+    count: usize,
+    current: usize,
+    previous: bool,
+    next: bool,
+}
+
 impl AlignedEditor {
+    fn review_navigation(&self) -> ReviewNavigation {
+        if let Some(merge) = &self.merge {
+            ReviewNavigation {
+                count: merge.conflicts.len(),
+                current: merge.current.map_or(0, |id| id.0 + 1),
+                previous: self.merge_target(true).is_some(),
+                next: self.merge_target(false).is_some(),
+            }
+        } else {
+            ReviewNavigation {
+                count: self.alignment.blocks().len(),
+                current: self
+                    .navigation
+                    .current(&self.alignment)
+                    .map_or(0, |index| index + 1),
+                previous: self
+                    .navigation
+                    .target(&self.alignment, ChangeDirection::Previous)
+                    .is_some(),
+                next: self
+                    .navigation
+                    .target(&self.alignment, ChangeDirection::Next)
+                    .is_some(),
+            }
+        }
+    }
+
     fn render_review_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.alignment.blocks().len();
-        let current = self
-            .navigation
-            .current(&self.alignment)
-            .map_or(0, |index| index + 1);
+        let ReviewNavigation {
+            count,
+            current,
+            previous,
+            next,
+        } = self.review_navigation();
+        let merging = self.merge.is_some();
+        let previous_label = if merging {
+            "Previous unresolved conflict"
+        } else {
+            "Previous change"
+        };
+        let next_label = if merging {
+            "Next unresolved conflict"
+        } else {
+            "Next change"
+        };
         let label = format!("{current} of {count}");
 
         // Reserve both numbers at the total's digit count, including the 9 → 10 transition.
@@ -54,36 +100,36 @@ impl AlignedEditor {
                     .gap(px(2.0))
                     .flex_shrink_0()
                     .child(
-                        Button::new("previous-change")
-                            .icon(IconName::ArrowUp)
-                            .accessibility_label("Previous change")
-                            .ghost()
-                            .with_size(px(28.0))
-                            .tooltip("Previous change (Alt+Up)")
-                            .disabled(
-                                self.navigation
-                                    .target(&self.alignment, ChangeDirection::Previous)
-                                    .is_none(),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.previous_change(&PreviousChange, window, cx);
-                            })),
+                        Button::new(if merging {
+                            "previous-conflict"
+                        } else {
+                            "previous-change"
+                        })
+                        .icon(IconName::ArrowUp)
+                        .accessibility_label(previous_label)
+                        .ghost()
+                        .with_size(px(28.0))
+                        .tooltip(format!("{previous_label} (Alt+Up)"))
+                        .disabled(!previous)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.previous_change(&PreviousChange, window, cx);
+                        })),
                     )
                     .child(
-                        Button::new("next-change")
-                            .icon(IconName::ArrowDown)
-                            .accessibility_label("Next change")
-                            .ghost()
-                            .with_size(px(28.0))
-                            .tooltip("Next change (Alt+Down)")
-                            .disabled(
-                                self.navigation
-                                    .target(&self.alignment, ChangeDirection::Next)
-                                    .is_none(),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.next_change(&NextChange, window, cx);
-                            })),
+                        Button::new(if merging {
+                            "next-conflict"
+                        } else {
+                            "next-change"
+                        })
+                        .icon(IconName::ArrowDown)
+                        .accessibility_label(next_label)
+                        .ghost()
+                        .with_size(px(28.0))
+                        .tooltip(format!("{next_label} (Alt+Down)"))
+                        .disabled(!next)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.next_change(&NextChange, window, cx);
+                        })),
                     ),
             )
             .child(
@@ -112,6 +158,35 @@ impl AlignedEditor {
             }))
     }
 
+    fn render_header_detail(
+        &self,
+        side: Side,
+        directory: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut detail = div()
+            .h(px(18.0))
+            .flex_shrink_0()
+            .text_size(px(12.0))
+            .text_color(cx.theme().muted_foreground);
+
+        if let Some(merge) = &self.merge {
+            if side == Side::Right {
+                let unresolved = merge.session.unresolved().count();
+                detail = detail
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child("Result · In memory")
+                    .child(format!("{unresolved} unresolved"));
+            }
+        } else {
+            detail = detail.truncate().child(directory);
+        }
+
+        detail
+    }
+
     pub(super) fn render_pane_header(
         &self,
         side: Side,
@@ -122,17 +197,15 @@ impl AlignedEditor {
 
         div()
             .absolute()
-            .top(px(0.0))
-            .left(px(if side == Side::Left {
-                0.0
-            } else {
-                self.geometry().right_pane_left()
-            }))
-            .w(px(if side == Side::Right {
-                pane_width + super::scrollbar::WIDTH
-            } else {
-                pane_width
-            }))
+            .top_0()
+            .left(px(self.pane_left(side)))
+            .w(px(
+                if side == Side::Incoming || (side == Side::Right && self.merge.is_none()) {
+                    pane_width + super::scrollbar::WIDTH
+                } else {
+                    pane_width
+                },
+            ))
             .h(px(HEADER_HEIGHT))
             .px(px(16.0))
             .flex()
@@ -172,17 +245,22 @@ impl AlignedEditor {
                             .flex_shrink_0()
                             .text_size(px(12.0))
                             .text_color(cx.theme().muted_foreground)
-                            .child("Baseline · Read-only")
+                            .child(if self.merge.is_some() {
+                                "Local · Read-only"
+                            } else {
+                                "Baseline · Read-only"
+                            })
                     }))
-                    .children((side == Side::Right).then(|| self.render_review_controls(cx))),
+                    .children((side == Side::Right).then(|| self.render_review_controls(cx)))
+                    .children((self.merge.is_some() && side == Side::Incoming).then(|| {
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(12.0))
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Incoming · Read-only")
+                    })),
             )
-            .child(
-                div()
-                    .truncate()
-                    .text_size(px(12.0))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(directory),
-            )
+            .child(self.render_header_detail(side, directory, cx))
     }
 }
 

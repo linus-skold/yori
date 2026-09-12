@@ -55,6 +55,10 @@ impl AlignedEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.merge.is_some() {
+            return;
+        }
+
         self.show_connections = enabled;
         self.hovered_connection = None;
 

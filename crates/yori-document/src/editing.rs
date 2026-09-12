@@ -1,4 +1,4 @@
-//! Small source-based edit history and navigation for the editable prototype.
+//! Source-based edit history and navigation for diff and merge editing.
 //! History stores replacement deltas, not full document snapshots or display rows.
 
 use std::ops::Range;

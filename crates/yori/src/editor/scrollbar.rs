@@ -67,11 +67,42 @@ impl AlignedEditor {
     pub(super) fn render_scrollbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let track = self.scroll_track();
         let thumb = track.thumb(self.vertical_scroll);
-        let bands = track.bands(&self.alignment, LINE_HEIGHT);
-        let current = self
-            .navigation
-            .current(&self.alignment)
-            .map(|index| track.marker(self.alignment.blocks()[index].rows.clone(), LINE_HEIGHT));
+        let bands = if self.merge.is_none() {
+            track.bands(&self.alignment, LINE_HEIGHT)
+        } else {
+            Vec::new()
+        };
+        let merge_bands: Vec<_> = self
+            .merge
+            .iter()
+            .flat_map(|merge| {
+                merge.session.conflicts().iter().map(|conflict| {
+                    let color = if merge
+                        .session
+                        .state(conflict.id)
+                        .expect("known conflict")
+                        .resolved
+                    {
+                        cx.theme().muted_foreground
+                    } else {
+                        cx.theme().warning
+                    };
+                    (
+                        track.marker(merge.conflicts[conflict.id.0].clone(), LINE_HEIGHT),
+                        color,
+                    )
+                })
+            })
+            .collect();
+        let current = if let Some(merge) = &self.merge {
+            merge
+                .current
+                .map(|id| track.marker(merge.conflicts[id.0].clone(), LINE_HEIGHT))
+        } else {
+            self.navigation
+                .current(&self.alignment)
+                .map(|index| track.marker(self.alignment.blocks()[index].rows.clone(), LINE_HEIGHT))
+        };
         let foreground = cx.theme().foreground;
         let thumb_color = foreground.opacity(if self.scrollbar_grab.is_some() {
             0.24
@@ -100,6 +131,9 @@ impl AlignedEditor {
                     move |bounds, (), window, _| {
                         paint_rect(bounds, 1.0..WIDTH - 1.0, thumb.clone(), thumb_color, window);
                         paint_markers(bounds, &bands, current.clone(), foreground, window);
+                        for (rows, color) in &merge_bands {
+                            paint_rect(bounds, 6.0..14.0, rows.clone(), *color, window);
+                        }
 
                         capture_drag(editor.clone(), window);
                     },

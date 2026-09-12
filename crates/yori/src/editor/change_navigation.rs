@@ -15,17 +15,21 @@ impl AlignedEditor {
                 self.horizontal_scroll,
             )
             .row;
-        self.navigation.locate(row);
+        if self.merge.is_some() {
+            self.locate_merge_row(row);
+        } else {
+            self.navigation.locate(row);
+        }
     }
 
     pub(super) fn locate_caret_change(&mut self) {
         if let Some(selection) = &self.selection {
-            let row = self.alignment.row_for_offset(
-                &self.document(selection.side).document,
-                selection.head,
-                selection.side == Side::Left,
-            );
-            self.navigation.locate(row);
+            let row = self.row_for_source(selection.side, selection.head);
+            if self.merge.is_some() {
+                self.locate_merge_row(row);
+            } else {
+                self.navigation.locate(row);
+            }
         }
     }
 
@@ -53,6 +57,11 @@ impl AlignedEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.merge.is_some() {
+            self.navigate_merge(matches!(direction, ChangeDirection::Previous), window, cx);
+            return;
+        }
+
         self.cancel_vim();
         self.finish_composition();
         let Some(target) = self.navigation.advance(&self.alignment, direction) else {
