@@ -4,6 +4,7 @@ mod appearance;
 mod comparison;
 mod editor;
 mod instance;
+mod storage;
 mod workspace;
 use comparison::ComparisonPaths;
 use gpui_kit::component::Root;

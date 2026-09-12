@@ -57,6 +57,11 @@ is distinct from its current contents and does not make it another merge input.
 Overlapping changes that need an explicit reconciliation decision. Editing or
 taking selected lines does not by itself declare the conflict resolved.
 
+**Saved checkpoint**:
+The document contents last loaded or successfully saved, used to distinguish
+unsaved edits from differences against another file. A new merge result has no
+saved checkpoint until it is explicitly saved.
+
 **Workspace**:
 The application's collection of open diff and merge tabs, not a source project or
 directory-comparison scope.

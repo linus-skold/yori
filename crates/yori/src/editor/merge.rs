@@ -103,6 +103,7 @@ impl AlignedEditor {
             show_base: false,
             base_preview: None,
         });
+        editor.dirty.saved_to_disk = false;
         editor.selection = Some(Selection {
             side: Side::Right,
             anchor: offset,

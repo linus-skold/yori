@@ -1,6 +1,7 @@
 //! Input-level regressions on GPUI's headless test platform; no pixel captures.
 
 mod merging;
+mod saving;
 
 use super::*;
 use gpui_kit::component::Root;
@@ -38,6 +39,11 @@ fn harness(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContex
     let workspace = workspace.unwrap();
     cx.update(|window, cx| {
         workspace.update(cx, |view, cx| {
+            // Real watch delivery has separate coverage. Drive scans explicitly
+            // here so external IO cannot reorder native input tests.
+            view.monitor.take();
+            view.disk_watch.take();
+
             let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
             view.open_paths(
                 &fixtures.join("before.rs"),

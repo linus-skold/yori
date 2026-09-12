@@ -1,7 +1,7 @@
 //! Quiet document controls beneath each pane, using the existing component kit.
 
 use gpui_kit::component::{
-    ActiveTheme, Sizable,
+    ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
     menu::{DropdownMenu, PopupMenuItem},
     tooltip::Tooltip,
@@ -93,6 +93,23 @@ impl AlignedEditor {
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             }))
             .child(div().flex_1())
+            .children((side == Side::Right).then(|| {
+                Button::new("save-document")
+                    .label("Save")
+                    .small()
+                    .ghost()
+                    .disabled(self.saving || self.unresolved_count() != 0)
+                    .tooltip(if self.unresolved_count() != 0 {
+                        "Resolve all conflicts before saving RESULT".to_owned()
+                    } else if self.needs_save() {
+                        "Save changes (Ctrl+S)".to_owned()
+                    } else {
+                        "No unsaved changes (Ctrl+S)".to_owned()
+                    })
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(crate::workspace::Save), cx);
+                    })
+            }))
             .children(
                 (side == Side::Incoming || (side == Side::Right && self.merge.is_none()))
                     .then(|| self.render_options_controls(cx)),

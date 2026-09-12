@@ -1,5 +1,8 @@
 //! A single window of independent comparison editors, using the existing component kit.
 
+mod disk_dialog;
+mod files;
+mod persistence;
 mod tabs;
 #[cfg(test)]
 mod tests;
@@ -18,6 +21,7 @@ use gpui_kit::{
     Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window,
     div, px,
 };
+#[cfg(test)]
 use yori_document::Document;
 
 use crate::comparison::{ComparisonPaths, MergePaths};
@@ -31,6 +35,7 @@ gpui_kit::actions!(
     [
         OpenComparison,
         OpenMerge,
+        Save,
         CloseComparison,
         Quit,
         NextTab,
@@ -41,6 +46,8 @@ gpui_kit::actions!(
 struct OpenTab {
     editor: Entity<AlignedEditor>,
     _subscription: Subscription,
+    files: files::Files,
+    message: Option<String>,
 }
 
 pub(super) struct Workspace {
@@ -48,6 +55,14 @@ pub(super) struct Workspace {
     focus: FocusHandle,
     tab_scroll: ScrollHandle,
     picking_files: bool,
+    saving: bool,
+    notice_scheduled: bool,
+    disk_notice: std::rc::Weak<std::cell::RefCell<disk_dialog::DiskNotice>>,
+    scan: persistence::ScanState,
+    disk_epoch: u64,
+    disk_watch: Option<crate::storage::FileWatch>,
+    watch_error: Option<String>,
+    monitor: Option<gpui_kit::Task<()>>,
 }
 
 impl Workspace {
@@ -55,6 +70,9 @@ impl Workspace {
         let view = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             view.update(cx, |this, cx| {
+                if this.saving || window.has_active_dialog(cx) {
+                    return false;
+                }
                 if !this.has_modified_tabs(cx) {
                     return true;
                 }
@@ -68,11 +86,28 @@ impl Workspace {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
 
+        let (disk_watch, monitor) = Self::start_monitor(window, cx);
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.watch_paths();
+                this.scan_disk(cx);
+            }
+        })
+        .detach();
+
         Self {
             tabs: Tabs::default(),
             focus,
             tab_scroll: ScrollHandle::new(),
             picking_files: false,
+            saving: false,
+            notice_scheduled: false,
+            disk_notice: std::rc::Weak::new(),
+            scan: persistence::ScanState::default(),
+            disk_epoch: 0,
+            watch_error: disk_watch.is_none().then(|| "Live file watching is unavailable. Disk is still checked on activation and before saving.".into()),
+            disk_watch,
+            monitor,
         }
     }
 
@@ -141,21 +176,39 @@ impl Workspace {
             return Ok(());
         }
 
-        // Read every input before adding a tab or acknowledging a handoff.
-        // RESULT is a destination: initialize it from the merge, never its disk contents.
+        // Source contents and overwrite protection come from the same read.
+        let files = files::Files::load(&paths)?;
         let editor = match &paths {
             ComparisonPaths::Diff { baseline, local } => {
-                let left = PaneDocument::new(baseline.clone(), Document::read(baseline)?);
-                let right = PaneDocument::new(local.clone(), Document::read(local)?);
+                let left = PaneDocument::new(
+                    baseline.clone(),
+                    files
+                        .file(files::Role::Baseline)
+                        .accepted
+                        .document(baseline)?,
+                );
+                let right = PaneDocument::new(
+                    local.clone(),
+                    files.file(files::Role::Local).accepted.document(local)?,
+                );
                 self.deactivate(cx);
 
                 cx.new(|cx| AlignedEditor::new(left, right, window, cx))
             }
             ComparisonPaths::Merge(paths) => {
                 let session = yori_diff::merge::MergeSession::new(
-                    Document::read(&paths.base)?,
-                    Document::read(&paths.local)?,
-                    Document::read(&paths.incoming)?,
+                    files
+                        .file(files::Role::Base)
+                        .accepted
+                        .document(&paths.base)?,
+                    files
+                        .file(files::Role::Local)
+                        .accepted
+                        .document(&paths.local)?,
+                    files
+                        .file(files::Role::Incoming)
+                        .accepted
+                        .document(&paths.incoming)?,
                 )
                 .map_err(|error| error.to_string())?;
                 self.deactivate(cx);
@@ -169,9 +222,14 @@ impl Workspace {
             OpenTab {
                 editor,
                 _subscription: subscription,
+                files,
+                message: None,
             },
         );
 
+        self.disk_epoch += 1;
+        self.watch_paths();
+        self.scan_disk(cx);
         cx.notify();
         Ok(())
     }
@@ -195,6 +253,10 @@ impl Workspace {
     }
 
     fn activate(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picking_files || window.has_active_dialog(cx) {
+            return;
+        }
+
         self.deactivate(cx);
         self.tabs.activate(id);
 
@@ -223,7 +285,7 @@ impl Workspace {
 
     fn has_modified_tabs(&self, cx: &App) -> bool {
         self.tabs
-            .requires_discard_confirmation(None, |tab| tab.editor.read(cx).is_dirty())
+            .requires_discard_confirmation(None, |tab| tab.editor.read(cx).needs_save())
     }
 
     fn close(&mut self, target: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
@@ -236,6 +298,8 @@ impl Workspace {
             self.deactivate(cx);
         }
         self.tabs.remove(id);
+        self.disk_epoch += 1;
+        self.watch_paths();
 
         self.focus_active(window, cx);
         cx.notify();
@@ -247,13 +311,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if window.has_active_dialog(cx) {
+        if self.saving || window.has_active_dialog(cx) {
             return;
         }
 
         let modified = self
             .tabs
-            .requires_discard_confirmation(target, |tab| tab.editor.read(cx).is_dirty());
+            .requires_discard_confirmation(target, |tab| tab.editor.read(cx).needs_save());
         if !modified {
             self.close(target, window, cx);
             return;
@@ -263,32 +327,51 @@ impl Workspace {
         self.focus_active(window, cx);
 
         let title = target.map_or_else(
-            || "Discard edits and close yori?".to_owned(),
-            |id| format!("Discard edits to {}?", self.tabs.label(id)),
+            || "Save changes before closing yori?".to_owned(),
+            |id| format!("Save changes to {}?", self.tabs.label(id)),
         );
+        let unresolved = self.tabs.entries.iter().any(|tab| {
+            target.is_none_or(|id| tab.id == id)
+                && tab.content.editor.read(cx).unresolved_count() != 0
+        });
         let view = cx.weak_entity();
         window.open_dialog(cx, move |dialog, _, _| {
             let view = view.clone();
+            let save_view = view.clone();
             let footer = DialogFooter::new()
                 .child(
                     Button::new("cancel")
-                        .label("Keep open")
+                        .label("Cancel")
                         .on_click(|_, window, cx| {
                             window.dispatch_action(Box::new(Cancel), cx);
                         }),
                 )
                 .child(
                     Button::new("ok")
-                        .label("Discard edits")
-                        .primary()
+                        .label("Discard")
                         .on_click(|_, window, cx| {
                             window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
                         }),
-                );
+                )
+                .child(Button::new("save-and-close")
+                    .label(if target.is_some() { "Save" } else { "Save all" })
+                    .primary()
+                    .disabled(unresolved)
+                    .on_click(move |_, window, cx| {
+                        let view = save_view.clone();
+                        window.defer(cx, move |window, cx| {
+                            window.close_dialog(cx);
+                            let _ = view.update(cx, |this, cx| this.save_before_close(target, window, cx));
+                        });
+                    }));
 
             dialog
                 .title(title.clone())
-                .child("Edits are only held in memory. Closing will discard them; saving is not available yet.")
+                .child(if unresolved {
+                    "There are unresolved conflicts. Resolve them before saving, or discard this session."
+                } else {
+                    "Your changes have not been saved. Save them, discard them, or keep the workspace open."
+                })
                 .overlay_closable(false)
                 .footer(footer)
                 .on_ok(move |_, window, cx| {
@@ -345,7 +428,7 @@ impl Workspace {
             .child(
                 div()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Open a two-way diff or a three-way merge. Nothing is written to disk."),
+                    .child("Open a two-way diff or a three-way merge."),
             )
             .child(
                 Button::new("open-first-comparison")
@@ -393,7 +476,7 @@ impl Workspace {
         let id = tab.id;
         let label = self.tabs.label(id);
         let description = tab.paths.description();
-        let modified = tab.content.editor.read(cx).is_dirty();
+        let modified = tab.content.editor.read(cx).needs_save();
         let accessible = format!(
             "{label}{}; {description}",
             if modified { "; modified" } else { "" }
@@ -443,6 +526,8 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.schedule_disk_notices(window, cx);
+
         let selected = self
             .tabs
             .entries
@@ -500,6 +585,7 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::choose_pair))
             .on_action(cx.listener(Self::choose_merge))
+            .on_action(cx.listener(Self::save_active))
             .on_action(cx.listener(|this, _: &CloseComparison, window, cx| {
                 if let Some(id) = this.tabs.active {
                     this.request_close(Some(id), window, cx);
@@ -615,6 +701,7 @@ pub(super) fn init(cx: &mut App) {
 
     cx.bind_keys([
         KeyBinding::new(&format!("{command}-o"), OpenComparison, Some(KEY_CONTEXT)),
+        KeyBinding::new(&format!("{command}-s"), Save, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-shift-m"), OpenMerge, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-w"), CloseComparison, Some(KEY_CONTEXT)),
         KeyBinding::new(&format!("{command}-q"), Quit, Some(KEY_CONTEXT)),

@@ -177,7 +177,11 @@ impl AlignedEditor {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child("Result · In memory")
+                    .child(if self.dirty.saved_to_disk {
+                        "Result"
+                    } else {
+                        "Result · Not saved"
+                    })
                     .child(format!("{unresolved} unresolved"));
             }
         } else {

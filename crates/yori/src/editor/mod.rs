@@ -9,6 +9,7 @@ mod footer;
 mod highlighting;
 mod input;
 mod merge;
+mod persistence;
 mod restoration;
 mod scrollbar;
 mod vim;
@@ -181,6 +182,8 @@ pub(super) struct DirtyChanged;
 struct DirtyState {
     original: String,
     modified: bool,
+    saved_resolutions: Vec<bool>,
+    saved_to_disk: bool,
 }
 
 impl DirtyState {
@@ -188,6 +191,8 @@ impl DirtyState {
         Self {
             original: text.to_owned(),
             modified: false,
+            saved_resolutions: Vec::new(),
+            saved_to_disk: true,
         }
     }
 
@@ -209,6 +214,7 @@ pub(super) struct AlignedEditor {
     merge: Option<merge::MergeState>,
     vim: yori::vim::Vim,
     dirty: DirtyState,
+    saving: bool,
     preferred_column: Option<usize>,
     focus: FocusHandle,
     selection: Option<Selection>,
@@ -263,6 +269,7 @@ impl AlignedEditor {
             merge: None,
             vim: yori::vim::Vim::default(),
             dirty,
+            saving: false,
             preferred_column: None,
             focus,
             selection: None,
@@ -282,12 +289,23 @@ impl AlignedEditor {
     pub(super) fn is_dirty(&self) -> bool {
         self.dirty.modified
             || self.merge.as_ref().is_some_and(|merge| {
-                merge.session.conflicts().iter().any(|conflict| {
-                    merge
-                        .session
-                        .state(conflict.id)
-                        .is_some_and(|state| state.resolved)
-                })
+                merge
+                    .session
+                    .conflicts()
+                    .iter()
+                    .enumerate()
+                    .any(|(index, conflict)| {
+                        merge
+                            .session
+                            .state(conflict.id)
+                            .is_some_and(|state| state.resolved)
+                            != self
+                                .dirty
+                                .saved_resolutions
+                                .get(index)
+                                .copied()
+                                .unwrap_or(false)
+                    })
             })
     }
 
