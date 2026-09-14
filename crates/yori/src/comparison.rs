@@ -137,8 +137,9 @@ mod tests {
         let input = directory.path().join("local.rs");
         std::fs::write(&input, "keep me").unwrap();
         let output = directory.path().join("result.rs");
+        let resolved_output = directory.path().canonicalize().unwrap().join("result.rs");
 
-        assert_eq!(resolve_result(&output).unwrap(), output);
+        assert_eq!(resolve_result(&output).unwrap(), resolved_output);
         assert!(!output.exists());
         assert_eq!(
             resolve_result(&input).unwrap(),
@@ -147,13 +148,16 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&input).unwrap(), "keep me");
         assert!(resolve_result(directory.path()).is_err());
 
-        let alias = directory.path().join("alias.rs");
-        std::os::unix::fs::symlink(&input, &alias).unwrap();
-        assert_eq!(
-            resolve_result(&alias).unwrap(),
-            input.canonicalize().unwrap()
-        );
-        std::fs::remove_file(&input).unwrap();
-        assert!(resolve_result(&alias).is_err());
+        #[cfg(unix)]
+        {
+            let alias = directory.path().join("alias.rs");
+            std::os::unix::fs::symlink(&input, &alias).unwrap();
+            assert_eq!(
+                resolve_result(&alias).unwrap(),
+                input.canonicalize().unwrap()
+            );
+            std::fs::remove_file(&input).unwrap();
+            assert!(resolve_result(&alias).is_err());
+        }
     }
 }
