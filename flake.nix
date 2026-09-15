@@ -1,9 +1,15 @@
 {
   description = "yori development environment";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    kache = {
+      url = "github:kunobi-ninja/kache";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, kache }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -89,14 +95,20 @@
             wayland
             libxcb
           ];
-        in {
-          default = pkgs.mkShell {
+          shellAttributes = {
             nativeBuildInputs = with pkgs; [
               pkg-config
             ];
             buildInputs = runtimeLibraries;
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibraries;
           };
+          kachePackage = kache.packages.${system}.kache;
+        in {
+          default = pkgs.mkShell shellAttributes;
+          kache = pkgs.mkShell (shellAttributes // {
+            packages = [ kachePackage ];
+            RUSTC_WRAPPER = "${kachePackage}/bin/kache";
+          });
         });
     };
 }
