@@ -71,6 +71,25 @@ The document contents last loaded or successfully saved, used to distinguish
 unsaved edits from differences against another file. A new merge result has no
 saved checkpoint until it is explicitly saved.
 
+**Home**:
+The always-accessible workspace surface for starting workflows and opening application
+preferences. It is not an open comparison, merge or review session.
+_Avoid_: Landing page, standalone mode
+
+**Review source**:
+The source-control state selected for review, such as working changes, a Git commit or a
+submitted Perforce changelist.
+_Avoid_: Change set
+
+**Working changes**:
+Editable local differences used as a review source. Git working changes combine staged,
+unstaged and untracked files; Perforce working changes belong to one pending changelist.
+
+**Review session**:
+A collection of file comparisons reviewed together because they belong to one review
+source. It does not stage, commit, submit, revert or reorganize source-control state.
+_Avoid_: Review tab, change tab, source-control client
+
 **Workspace**:
-The application's collection of open diff and merge tabs, not a source project or
-directory-comparison scope.
+The application's collection of open diff, merge and review-session tabs, not a source
+project or directory-comparison scope.
