@@ -258,6 +258,26 @@ enum VimKeybindings {
     Enabled,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum HorizontalScrollbarVisibility {
+    #[default]
+    Hidden,
+    Visible,
+}
+
+impl HorizontalScrollbarVisibility {
+    fn height(self) -> f32 {
+        match self {
+            Self::Hidden => 0.0,
+            Self::Visible => scrollbar::HEIGHT,
+        }
+    }
+
+    fn is_visible(self) -> bool {
+        self == Self::Visible
+    }
+}
+
 impl From<bool> for VimKeybindings {
     fn from(enabled: bool) -> Self {
         if enabled {
@@ -309,6 +329,8 @@ pub(super) struct AlignedEditor {
     show_connections: bool,
     hovered_connection: Option<Range<usize>>,
     scrollbar_grab: Option<f32>,
+    horizontal_scrollbar_grab: Option<f32>,
+    horizontal_scrollbar_visibility: HorizontalScrollbarVisibility,
     // Mouse events are window-local; measured bounds provide the editor's content-local inset.
     content_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
@@ -421,6 +443,7 @@ impl AlignedEditor {
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
                 this.scrollbar_grab = None;
+                this.horizontal_scrollbar_grab = None;
                 this.hovered_connection = None;
                 this.cancel_vim();
                 cx.notify();
@@ -472,6 +495,8 @@ impl AlignedEditor {
             show_connections: config.show_change_connections,
             hovered_connection: None,
             scrollbar_grab: None,
+            horizontal_scrollbar_grab: None,
+            horizontal_scrollbar_visibility: HorizontalScrollbarVisibility::Hidden,
             content_bounds: Rc::new(Cell::new(Bounds::new(
                 point(px(0.0), px(0.0)),
                 window.viewport_size(),
@@ -575,6 +600,7 @@ impl AlignedEditor {
 
     pub(super) fn deactivate(&mut self, cx: &mut Context<Self>) {
         self.scrollbar_grab = None;
+        self.horizontal_scrollbar_grab = None;
         self.hovered_connection = None;
         self.cancel_vim();
         self.finish_composition();
@@ -798,11 +824,13 @@ impl AlignedEditor {
 
     fn geometry(&self) -> EditorGeometry {
         let bounds = self.content_bounds.get();
+        let horizontal_scrollbar_height = self.horizontal_scrollbar_visibility.height();
+
         EditorGeometry::new(
             f32::from(bounds.origin.x),
             f32::from(bounds.origin.y),
             (f32::from(bounds.size.width) - scrollbar::WIDTH).max(0.0),
-            (f32::from(bounds.size.height) - FOOTER_HEIGHT).max(0.0),
+            (f32::from(bounds.size.height) - FOOTER_HEIGHT - horizontal_scrollbar_height).max(0.0),
             HEADER_HEIGHT,
             GUTTER_WIDTH,
             LINE_HEIGHT,
@@ -1274,14 +1302,20 @@ impl AlignedEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let max_horizontal_scroll = self.max_horizontal_scroll(window, cx);
+        self.horizontal_scrollbar_visibility = if max_horizontal_scroll > 0.0 {
+            HorizontalScrollbarVisibility::Visible
+        } else {
+            self.horizontal_scrollbar_grab = None;
+            HorizontalScrollbarVisibility::Hidden
+        };
+
         let geometry = self.geometry();
         let width = geometry.content_width();
         let pane_width = geometry.pane_width();
         let text_viewport_width = geometry.text_viewport_width();
 
-        self.horizontal_scroll = self
-            .horizontal_scroll
-            .min(self.max_horizontal_scroll(window, cx));
+        self.horizontal_scroll = self.horizontal_scroll.min(max_horizontal_scroll);
         self.vertical_scroll = self
             .vertical_scroll
             .min(geometry.vertical_scroll_limit(self.alignment.rows().len()));
@@ -1558,6 +1592,11 @@ impl AlignedEditor {
             )
             .child(rows)
             .child(self.render_scrollbar(cx))
+            .children(
+                self.horizontal_scrollbar_visibility
+                    .is_visible()
+                    .then(|| self.render_horizontal_scrollbar(max_horizontal_scroll, cx)),
+            )
             .child(
                 div()
                     .absolute()
