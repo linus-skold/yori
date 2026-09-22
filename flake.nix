@@ -3,13 +3,17 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     kache = {
       url = "github:kunobi-ninja/kache";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, kache }:
+  outputs = { self, nixpkgs, rust-overlay, kache }:
     let
       systems = [ "x86_64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -126,7 +130,11 @@
 
       devShells = forAllSystems (system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ rust-overlay.overlays.default ];
+          };
+          rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           p4apiCache = p4apiCacheFor system;
           runtimeLibraries = with pkgs; [
             fontconfig
@@ -138,6 +146,7 @@
           ];
           shellAttributes = {
             nativeBuildInputs = with pkgs; [
+              rustToolchain
               perl
               pkg-config
               (python3.withPackages (pythonPackages: [ pythonPackages.pillow ]))
