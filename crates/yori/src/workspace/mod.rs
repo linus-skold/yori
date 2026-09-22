@@ -41,7 +41,7 @@ use perforce_chooser::{PerforceSourceChooser, SourceChosen};
 use preferences_dialog::PreferencesDialog;
 use tabs::{TabIdentity, Tabs};
 
-const KEY_CONTEXT: &str = "ComparisonWorkspace";
+pub(crate) const KEY_CONTEXT: &str = "ComparisonWorkspace";
 
 gpui_kit::actions!(
     workspace,
@@ -770,7 +770,9 @@ impl Workspace {
                 .close_button(false)
                 .overlay_closable(false)
                 .footer(footer)
-                .on_ok(move |_, _, cx| applying.update(cx, PreferencesDialog::apply))
+                .on_ok(move |_, window, cx| {
+                    applying.update(cx, |preferences, cx| preferences.apply(window, cx))
+                })
                 .on_cancel(|_, _, _| true)
                 .on_close(move |_, _, cx| {
                     let _ = workspace.update(cx, |workspace, cx| {
@@ -1388,30 +1390,12 @@ async fn choose_paths(
     }))
 }
 
+pub(crate) fn fixed_key_bindings() -> Vec<KeyBinding> {
+    let mut bindings = home::fixed_key_bindings();
+    bindings.extend(perforce_chooser::fixed_key_bindings());
+    bindings
+}
+
 pub(super) fn init(cx: &mut App) {
-    home::init(cx);
-    perforce_chooser::init(cx);
-
-    let command = if cfg!(target_os = "macos") {
-        "cmd"
-    } else {
-        "ctrl"
-    };
-
-    cx.bind_keys([
-        KeyBinding::new(&format!("{command}-o"), OpenComparison, Some(KEY_CONTEXT)),
-        KeyBinding::new(
-            &format!("{command}-shift-g"),
-            OpenGitReview,
-            Some(KEY_CONTEXT),
-        ),
-        KeyBinding::new(&format!("{command}-s"), Save, Some(KEY_CONTEXT)),
-        KeyBinding::new(&format!("{command}-shift-m"), OpenMerge, Some(KEY_CONTEXT)),
-        KeyBinding::new(&format!("{command}-w"), CloseComparison, Some(KEY_CONTEXT)),
-        KeyBinding::new(&format!("{command}-q"), Quit, Some(KEY_CONTEXT)),
-        KeyBinding::new(&format!("{command}-,"), Preferences, None),
-        KeyBinding::new("ctrl-tab", NextTab, Some(KEY_CONTEXT)),
-        KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(KEY_CONTEXT)),
-        KeyBinding::new(&format!("{command}-shift-h"), ShowHome, Some(KEY_CONTEXT)),
-    ]);
+    crate::keymap::init(cx);
 }
