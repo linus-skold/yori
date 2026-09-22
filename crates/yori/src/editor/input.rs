@@ -7,7 +7,8 @@ use super::{
     KeyBinding, LINE_HEIGHT, Motion, MoveDown, MoveEnd, MoveFinish, MoveHome, MoveLeft, MoveRight,
     MoveStart, MoveUp, Newline, Paste, Pixels, Range, Redo, RestoreSelectedLines, SelectAll,
     SelectDown, SelectEnd, SelectHome, SelectLeft, SelectRight, SelectUp, Selection, Side,
-    TAB_WIDTH, TextRun, UTF16Selection, Undo, Window, point, px,
+    SourceLocation, TAB_WIDTH, TextRun, UTF16Selection, Undo, VisualAffinity, Window, point, px,
+    wrapping::WrapProjection,
 };
 use yori::geometry::display_units;
 use yori::vim::EditTarget;
@@ -76,7 +77,7 @@ impl AlignedEditor {
         let selection = self
             .right_selection()
             .unwrap_or(TextSelection::caret(expected.right.start));
-        let anchor = self.view_anchor();
+        let anchor = self.view_anchor(window, cx);
 
         match yori_diff::restore_block(
             &mut self.history,
@@ -131,7 +132,7 @@ impl AlignedEditor {
         let selection = self
             .right_selection()
             .unwrap_or(TextSelection::caret(expected.local.start));
-        let anchor = self.view_anchor();
+        let anchor = self.view_anchor(window, cx);
 
         match yori_diff::restore_selection(
             &mut self.history,
@@ -176,7 +177,7 @@ impl AlignedEditor {
         };
 
         let inserting = Self::vim_enabled(cx) && self.vim.mode() == yori::vim::Mode::Insert;
-        let anchor = self.view_anchor();
+        let anchor = self.view_anchor(window, cx);
         match self
             .edit_target()
             .replace(selection, range, text, inserting)
@@ -189,23 +190,23 @@ impl AlignedEditor {
         }
     }
 
-    pub(super) fn cursor_position(
-        &self,
-        offset: usize,
-        window: &mut Window,
-        cx: &App,
-    ) -> (usize, f32) {
-        let side = self
-            .selection
-            .as_ref()
-            .map_or(Side::Right, |selection| selection.side);
-        self.source_position(side, offset, window, cx)
-    }
-
     pub(super) fn source_position(
         &self,
         side: Side,
         offset: usize,
+        window: &mut Window,
+        cx: &App,
+    ) -> (usize, f32) {
+        let projection = self.wrap_projection(window, cx);
+
+        self.source_position_in(side, offset, &projection, window, cx)
+    }
+
+    pub(super) fn source_position_in(
+        &self,
+        side: Side,
+        offset: usize,
+        projection: &WrapProjection,
         window: &mut Window,
         cx: &App,
     ) -> (usize, f32) {
@@ -214,13 +215,39 @@ impl AlignedEditor {
         let range = document.line_content_range(document.line_at_offset(offset));
         let display =
             DisplayLine::from_source(&document.text()[range.clone()], range.start, TAB_WIDTH);
+        let Some(projected) = projection.row(self, row) else {
+            return (projection.visual_rows(), 0.0);
+        };
+        let display_offset = display.display_offset(offset);
+        let segments = projected.segments(side);
+        let affinity = self.visual_affinity.filter(|affinity| {
+            affinity.projection == projection.identity()
+                && affinity.side == side
+                && affinity.offset == offset
+                && affinity.logical_row == row
+        });
+        let continuation = affinity
+            .filter(|affinity| segments.get(affinity.continuation).is_some())
+            .map_or_else(
+                || {
+                    segments
+                        .iter()
+                        .position(|segment| display_offset < segment.end)
+                        .unwrap_or_else(|| segments.len().saturating_sub(1))
+                },
+                |affinity| affinity.continuation,
+            );
+        let Some(segment) = segments.get(continuation) else {
+            return (projected.visual_start, 0.0);
+        };
         if display.text.is_empty() {
-            return (row, 0.0);
+            return (projected.visual_start + continuation, 0.0);
         }
 
-        let display_offset = display.display_offset(offset);
+        let text = &display.text[segment.clone()];
+        let segment_offset = display_offset.clamp(segment.start, segment.end) - segment.start;
         let run = TextRun {
-            len: display.text.len(),
+            len: text.len(),
             font: Font {
                 family: cx.theme().mono_font_family.clone(),
                 ..Font::default()
@@ -231,13 +258,16 @@ impl AlignedEditor {
             strikethrough: None,
         };
         let line = window.text_system().shape_line(
-            display.text.into(),
+            text.to_owned().into(),
             cx.theme().mono_font_size,
             &[run],
             None,
         );
 
-        (row, f32::from(line.x_for_index(display_offset)))
+        (
+            projected.visual_start + continuation,
+            f32::from(line.x_for_index(segment_offset)),
+        )
     }
 
     pub(super) fn reveal_cursor(&mut self, window: &mut Window, cx: &App) {
@@ -263,7 +293,8 @@ impl AlignedEditor {
         window: &mut Window,
         cx: &App,
     ) {
-        let (row, x) = self.source_position(side, offset, window, cx);
+        let projection = self.wrap_projection(window, cx);
+        let (row, x) = self.source_position_in(side, offset, &projection, window, cx);
         let geometry = self.geometry();
         let y = display_units(row) * LINE_HEIGHT;
         let height = geometry.rows_viewport_height();
@@ -274,13 +305,17 @@ impl AlignedEditor {
         }
         self.vertical_scroll = self
             .vertical_scroll
-            .min(geometry.vertical_scroll_limit(self.alignment.rows().len()));
+            .min(geometry.vertical_scroll_limit(projection.visual_rows()));
 
-        let width = geometry.text_viewport_width();
-        if x < self.horizontal_scroll {
-            self.horizontal_scroll = x;
-        } else if x + 2.0 > self.horizontal_scroll + width {
-            self.horizontal_scroll = (x + 2.0 - width).max(0.0);
+        if self.word_wrap.enabled() {
+            self.horizontal_scroll = 0.0;
+        } else {
+            let width = geometry.text_viewport_width();
+            if x < self.horizontal_scroll {
+                self.horizontal_scroll = x;
+            } else if x + 2.0 > self.horizontal_scroll + width {
+                self.horizontal_scroll = (x + 2.0 - width).max(0.0);
+            }
         }
     }
 
@@ -305,11 +340,28 @@ impl AlignedEditor {
             anchor: selection.anchor,
             head: selection.head,
         };
-        let document = &self.document(side).document;
-        let mut column = self.preferred_column;
-        let next = editing::navigate(document, old, motion, extend, &mut column);
-        self.preferred_column = column;
+        let (next, visual_affinity) = if self.word_wrap.enabled()
+            && matches!(
+                motion,
+                Motion::Up | Motion::Down | Motion::Home | Motion::End
+            ) {
+            self.wrapped_navigation(side, old, motion, extend, window, cx)
+        } else {
+            self.preferred_visual_x = None;
+            let document = &self.document(side).document;
+            let mut column = self.preferred_column;
+            let next = editing::navigate(document, old, motion, extend, &mut column);
+            self.preferred_column = column;
 
+            let affinity = self.word_wrap.enabled().then(|| {
+                let projection = self.wrap_projection(window, cx);
+                let prefer_previous = matches!(motion, Motion::Left | Motion::Finish);
+                self.visual_affinity_for_offset(side, next.head, prefer_previous, &projection)
+            });
+            (next, affinity.flatten())
+        };
+
+        self.visual_affinity = visual_affinity;
         self.selection = Some(Selection {
             side,
             anchor: next.anchor,
@@ -319,6 +371,96 @@ impl AlignedEditor {
         self.reveal_cursor(window, cx);
 
         cx.notify();
+    }
+
+    fn wrapped_navigation(
+        &mut self,
+        side: Side,
+        selection: TextSelection,
+        motion: Motion,
+        extend: bool,
+        window: &mut Window,
+        cx: &App,
+    ) -> (TextSelection, Option<VisualAffinity>) {
+        let projection = self.wrap_projection(window, cx);
+        let (visual_row, current_x) =
+            self.source_position_in(side, selection.head, &projection, window, cx);
+        let location = match motion {
+            Motion::Up | Motion::Down => {
+                let preferred_x = *self.preferred_visual_x.get_or_insert(current_x);
+                let backwards = matches!(motion, Motion::Up);
+                let mut target = visual_row;
+
+                loop {
+                    let next = if backwards {
+                        target.saturating_sub(1)
+                    } else {
+                        (target + 1).min(projection.visual_rows().saturating_sub(1))
+                    };
+                    if next == target {
+                        break SourceLocation {
+                            projection: projection.identity(),
+                            side,
+                            offset: selection.head,
+                            logical_row: self.row_for_source(side, selection.head),
+                            continuation: projection.visual_location(visual_row).1,
+                        };
+                    }
+                    target = next;
+
+                    let (row, continuation) = projection.visual_location(target);
+                    if projection
+                        .row(self, row)
+                        .is_some_and(|row| row.segments(side).get(continuation).is_some())
+                    {
+                        break self.source_location_for_x_in(
+                            side,
+                            target,
+                            preferred_x,
+                            &projection,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+            }
+            Motion::Home | Motion::End => {
+                self.preferred_visual_x = None;
+                let (row, continuation) = projection.visual_location(visual_row);
+                let display_byte = projection
+                    .row(self, row)
+                    .and_then(|row| row.segments(side).get(continuation).cloned())
+                    .map_or(0, |segment| {
+                        if matches!(motion, Motion::Home) {
+                            segment.start
+                        } else {
+                            segment.end
+                        }
+                    });
+
+                SourceLocation {
+                    projection: projection.identity(),
+                    side,
+                    offset: self.source_offset_for(side, row, display_byte),
+                    logical_row: row,
+                    continuation,
+                }
+            }
+            Motion::Left | Motion::Right | Motion::Start | Motion::Finish => unreachable!(),
+        };
+        self.preferred_column = None;
+
+        (
+            TextSelection {
+                anchor: if extend {
+                    selection.anchor
+                } else {
+                    location.offset
+                },
+                head: location.offset,
+            },
+            Some(location.affinity()),
+        )
     }
 
     pub(super) fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -332,9 +474,11 @@ impl AlignedEditor {
             anchor: 0,
             head: self.document(side).document.text().len(),
         });
+        self.visual_affinity = None;
         self.sync_vim_selection(cx);
         self.locate_caret_change();
         self.preferred_column = None;
+        self.preferred_visual_x = None;
 
         cx.notify();
     }
@@ -436,7 +580,7 @@ impl AlignedEditor {
 
         self.cancel_vim();
         let selection = self.right_selection().unwrap_or(TextSelection::caret(0));
-        let anchor = self.view_anchor();
+        let anchor = self.view_anchor(window, cx);
         let result = if let Some(merge) = &mut self.merge {
             if redo {
                 merge.session.redo(selection)
@@ -556,7 +700,7 @@ impl EntityInputHandler for AlignedEditor {
             editing::from_utf16(text, range.start)..editing::from_utf16(text, range.end)
         });
         let inserting = Self::vim_enabled(cx) && self.vim.mode() == yori::vim::Mode::Insert;
-        let anchor = self.view_anchor();
+        let anchor = self.view_anchor(window, cx);
         match self
             .edit_target()
             .replace_marked(selection, range, text, selected, inserting)
@@ -579,8 +723,10 @@ impl EntityInputHandler for AlignedEditor {
         self.right_selection()?;
 
         let range = self.bytes_from_utf16(range);
-        let (row, x) = self.cursor_position(range.start, window, cx);
-        let (end_row, end_x) = self.cursor_position(range.end, window, cx);
+        let projection = self.wrap_projection(window, cx);
+        let (row, x) = self.source_position_in(Side::Right, range.start, &projection, window, cx);
+        let (end_row, end_x) =
+            self.source_position_in(Side::Right, range.end, &projection, window, cx);
         let origin = self.content_bounds.get().origin;
         let width = if row == end_row {
             (end_x - x).max(1.0)
@@ -607,8 +753,16 @@ impl EntityInputHandler for AlignedEditor {
         cx: &mut Context<Self>,
     ) -> Option<usize> {
         self.right_selection()?;
-        let (side, offset) = self.source_offset_at(point, window, cx);
-        (side == Side::Right).then(|| editing::to_utf16(self.right.document.text(), offset))
+        let location = self.source_location_at(point, window, cx);
+        if location.side != Side::Right {
+            return None;
+        }
+
+        self.visual_affinity = Some(location.affinity());
+        Some(editing::to_utf16(
+            self.right.document.text(),
+            location.offset,
+        ))
     }
 }
 

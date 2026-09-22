@@ -117,6 +117,7 @@ impl AlignedEditor {
         }
 
         self.alignment = Alignment::between(&self.left.document, &self.right.document);
+        self.invalidate_wrap_projection();
         self.navigation = ChangeNavigation::default();
         self.schedule_highlighting(super::Side::Left, window, cx);
         if replace_local {
@@ -129,6 +130,7 @@ impl AlignedEditor {
             selection
         });
         self.preferred_column = None;
+        self.preferred_visual_x = None;
         self.hovered_connection = None;
         self.sync_vim_selection(cx);
 
@@ -158,6 +160,7 @@ impl AlignedEditor {
         }
 
         self.alignment = Alignment::between(&self.left.document, &self.right.document);
+        self.invalidate_wrap_projection();
         self.navigation = ChangeNavigation::default();
         self.schedule_highlighting(
             if baseline {
@@ -170,6 +173,7 @@ impl AlignedEditor {
         );
         self.selection = None;
         self.preferred_column = None;
+        self.preferred_visual_x = None;
         self.hovered_connection = None;
         self.sync_vim_selection(cx);
 
