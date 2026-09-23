@@ -629,6 +629,39 @@ fn merge_save_requires_resolution_and_a_new_automatic_result_is_saveable(cx: &mu
 }
 
 #[gpui_kit::test]
+fn waiting_invocations_learn_whether_their_tab_saved_before_it_closed(cx: &mut TestAppContext) {
+    let (workspace, cx) = harness(cx);
+
+    for save in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let (id, paths) = open_merge(&workspace, cx, directory.path(), true);
+        let (completion, finished) = crate::instance::Completion::channel();
+        cx.update(|_, cx| {
+            workspace
+                .update(cx, |view, _| {
+                    view.wait_for_close(&Comparison::from(paths.clone()), completion)
+                })
+                .unwrap();
+        });
+
+        if save {
+            cx.update(|window, cx| {
+                window.click(("merge-incoming-button", 0usize), cx);
+                select_merge_input(window, cx);
+                window.press("ctrl-s", cx);
+            });
+            cx.run_until_parked();
+            assert!(paths.result.exists());
+        }
+        assert!(finished.try_recv().is_err(), "the tab is still open");
+
+        cx.update(|window, cx| workspace.update(cx, |view, cx| view.close(Some(id), window, cx)));
+
+        assert_eq!(finished.try_recv(), Ok(save));
+    }
+}
+
+#[gpui_kit::test]
 fn changed_merge_inputs_restart_explicitly_but_disappearing_inputs_keep_the_session(
     cx: &mut TestAppContext,
 ) {
