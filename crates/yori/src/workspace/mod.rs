@@ -502,7 +502,16 @@ impl Workspace {
                         | ReviewChanged::ActiveEditorChanged {
                             transfer_focus: false,
                         }
-                        | ReviewChanged::WordWrapChanged { .. } => {}
+                        | ReviewChanged::WordWrapChanged { .. }
+                        | ReviewChanged::MergeRequested(_) => {}
+                    }
+                }
+
+                if let ReviewChanged::MergeRequested(merge) = event {
+                    let merge = Comparison::Merge(merge.clone());
+                    match this.open_comparison(&merge, window, cx) {
+                        Ok(()) => this.focus_active(window, cx),
+                        Err(error) => window.push_notification(Notification::error(error), cx),
                     }
                 }
 

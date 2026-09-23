@@ -186,6 +186,14 @@ that client.
 
 Lists and the review navigator also accept <kbd>J</kbd> and <kbd>K</kbd> to move,
 <kbd>Enter</kbd> or <kbd>Space</kbd> to open, and <kbd>Ctrl</kbd>+<kbd>H</kbd> /
+Git working changes mark files with an unresolved merge conflict as `U`. The review
+shows the working file with its conflict markers. Select the file and choose **Start
+three-way merge** to open a merge tab. The tab uses the base, local, and incoming
+versions that Git recorded in the index. Saving the result writes the working file.
+It does not mark the conflict as resolved: run `git add` when you are done.
+Conflicts where one side deleted the file, and binary, symbolic link, and submodule
+conflicts, cannot be merged as text.
+
 <kbd>Ctrl</kbd>+<kbd>L</kbd> to move between panes. On macOS, substitute
 <kbd>Cmd</kbd> for <kbd>Ctrl</kbd> in the table above.
 
