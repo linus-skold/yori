@@ -1478,7 +1478,7 @@ async fn choose_paths(
         .map_err(|error| error.to_string())?;
 
     Ok(result.map(|result| {
-        Comparison::Merge(MergePaths {
+        Comparison::from(MergePaths {
             base,
             local,
             incoming,

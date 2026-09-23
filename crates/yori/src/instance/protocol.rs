@@ -199,7 +199,7 @@ fn decode_comparisons(
                 local,
                 incoming,
                 result,
-            } => Ok(Comparison::Merge(MergePaths {
+            } => Ok(Comparison::from(MergePaths {
                 base: decode_path(&base, total_path_bytes, "file path")?,
                 local: decode_path(&local, total_path_bytes, "file path")?,
                 incoming: decode_path(&incoming, total_path_bytes, "file path")?,

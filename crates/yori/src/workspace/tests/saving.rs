@@ -577,7 +577,7 @@ fn open_merge(
     let id = cx.update(|window, cx| {
         workspace
             .update(cx, |view, cx| {
-                view.open_comparisons(&[Comparison::Merge(paths.clone())], window, cx)
+                view.open_comparisons(&[Comparison::from(paths.clone())], window, cx)
             })
             .unwrap();
         window.render_frame(cx);
