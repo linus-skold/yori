@@ -150,9 +150,22 @@ impl Instance {
     /// one when none runs, and return whether the opened tab saved before it
     /// closed. The waiting process never owns the workspace: closing a tab must
     /// not end a window that later tabs share.
-    pub fn wait(invocation: &InvocationRequest) -> Result<bool, String> {
+    pub fn wait(
+        invocation: &InvocationRequest
+    ) -> Result<bool, String> {
+        let mut owner: Option<Child> = None;
+        
         Self::wait_with_owner(&instance_name(), invocation, || {
-            spawn_owner(&invocation.directory).map(drop)
+            if let Some(child) = &mut owner {
+                if let Ok(Some(status)) = child.try_wait() {
+                    return Err(format!("yori exited during startup: {status}"));
+                }
+                return Ok(());
+            }
+            
+            owner = Some(spawn_owner(&invocation.directory)?);
+        
+            Ok(())
         })
     }
 
