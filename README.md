@@ -164,8 +164,9 @@ To use yori with `git mergetool`, add this to your Git configuration:
     trustExitCode = true
 ```
 
-Git starts one merge tab for each conflicted file. Save the result to continue with
-the next file. If you close the tab without saving, Git keeps the file conflicted.
+Git starts one merge tab for each conflicted file. Save the result and close the tab 
+to continue with the next file. 
+If you close the tab without saving, Git keeps the file conflicted.
 
 ### Reviewing changes
 
